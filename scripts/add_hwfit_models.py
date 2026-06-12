@@ -25,6 +25,16 @@ import re
 import sys
 from datetime import datetime
 
+# Prefer the Odysseus-managed HF cache under DATA_DIR unless the operator
+# explicitly sets HF_HOME or HUGGINGFACE_HUB_CACHE. Importing src.constants is
+# best-effort (works when run from the repo); otherwise fall back to defaults.
+try:
+    from src.constants import HUGGINGFACE_HOME, HUGGINGFACE_HUB_CACHE
+    os.environ.setdefault("HF_HOME", HUGGINGFACE_HOME)
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", HUGGINGFACE_HUB_CACHE)
+except Exception:
+    pass
+
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
 

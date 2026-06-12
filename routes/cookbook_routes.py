@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, Depends
 
 from src.auth_helpers import require_user
-from src.constants import COOKBOOK_STATE_FILE
+from src.constants import COOKBOOK_STATE_FILE, HUGGINGFACE_HOME
 from pydantic import BaseModel
 
 from core.middleware import require_admin
@@ -421,7 +421,14 @@ def setup_cookbook_routes() -> APIRouter:
         # also breaks robust resume on flaky transfers — the blob-based hub
         # cache survives SSL ReadError mid-stream by reusing <sha>.incomplete,
         # local_dir does not. See issue #2722.
-        _dl_hf_home_shell = _shell_path(req.local_dir.rstrip("/")) if req.local_dir else None
+        if req.local_dir:
+            _dl_hf_home_shell = _shell_path(req.local_dir.rstrip("/"))
+        else:
+            # Default to Odysseus-managed HF cache under the app's DATA_DIR so
+            # downloads live inside the repository's data/ tree rather than
+            # scattered under the user's home. This respects HF_HOME env if set
+            # by operators (HUGGINGFACE_HOME), but otherwise centralizes cache.
+            _dl_hf_home_shell = _shell_path(HUGGINGFACE_HOME)
         _dl_pyarg = ""  # snapshot_download honors the env vars too — no kwarg needed
 
         # Build the hf download command. Redirection to suppress the interactive
@@ -507,6 +514,18 @@ def setup_cookbook_routes() -> APIRouter:
                 ps_lines.append(f"$env:HF_HOME = '{_dl_ps}'")
                 ps_lines.append(f"$env:HUGGINGFACE_HUB_CACHE = '{_dl_ps}/hub'")
                 ps_lines.append(f"$env:HF_HUB_CACHE = '{_dl_ps}/hub'")
+            elif not is_ollama_download:
+                # Default to Odysseus-managed HF cache under DATA_DIR when no
+                # explicit local_dir is provided. This keeps downloads inside the
+                # repo's data/ tree by default.
+                try:
+                    from src.constants import HUGGINGFACE_HOME
+                    _dl_ps = _ps_squote(HUGGINGFACE_HOME)
+                    ps_lines.append(f"$env:HF_HOME = '{_dl_ps}'")
+                    ps_lines.append(f"$env:HUGGINGFACE_HUB_CACHE = '{_dl_ps}/hub'")
+                    ps_lines.append(f"$env:HF_HUB_CACHE = '{_dl_ps}/hub'")
+                except Exception:
+                    pass
             if req.env_prefix:
                 ps_lines.append(_safe_env_prefix(req.env_prefix))
             if is_ollama_download:

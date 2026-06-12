@@ -20,11 +20,16 @@ TEXT_EXTS = {".md", ".html", ".htm", ".js", ".ts", ".css", ".py", ".sh",
              ".json", ".yml", ".yaml", ".txt"}
 
 
+from core.platform_compat import find_git
+
 def _tracked(paths_under):
     """Git-tracked files under a path, or None if git isn't available."""
+    git = find_git()
+    if not git:
+        return None
     try:
         out = subprocess.run(
-            ["git", "ls-files", paths_under],
+            [git, "ls-files", paths_under],
             cwd=REPO, capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.SubprocessError):

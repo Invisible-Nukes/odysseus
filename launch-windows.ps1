@@ -70,7 +70,7 @@ function Find-GitExe {
     $candidates = @(
         (Join-Path $env:ProgramFiles "Git\cmd\git.exe"),
         (Join-Path $env:ProgramFiles "Git\bin\git.exe"),
-        (Join-Path $env:'ProgramFiles(x86)' "Git\cmd\git.exe"),
+        (Join-Path ([Environment]::GetEnvironmentVariable('ProgramFiles(x86)')) "Git\cmd\git.exe"),
         (Join-Path $env:LocalAppData "Programs\Git\cmd\git.exe"),
         "C:\Program Files\Git\cmd\git.exe",
         "C:\Program Files (x86)\Git\cmd\git.exe"
@@ -165,18 +165,18 @@ $installLog = Join-Path $logsDir ("pip_install_$ts.log")
 Write-Host "Installing Python packages; logging to $installLog"
 & $venvPy -m pip install --upgrade pip > $installLog 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "pip upgrade failed. See $installLog" -ForegroundColor Red
+    Write-Host ("pip upgrade failed. See " + $installLog) -ForegroundColor Red
     Get-Content -Path $installLog -Tail 50 | ForEach-Object { Write-Host $_ }
     Fail "Dependency install failed during pip upgrade. See the log above."
 }
 
 & $venvPy -m pip install -r requirements.txt > $installLog 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "Dependency install failed. Last 100 lines from $installLog:" -ForegroundColor Red
+    Write-Host ("Dependency install failed. Last 100 lines from " + $installLog + ":") -ForegroundColor Red
     Get-Content -Path $installLog -Tail 100 | ForEach-Object { Write-Host $_ }
     Fail "Dependency install failed. Inspect $installLog for details."
 }
-Write-Host "Dependencies installed successfully (log: $installLog)" -ForegroundColor Green
+Write-Host ("Dependencies installed successfully (log: " + $installLog + ")") -ForegroundColor Green
 
 # 4. First-time setup (creates data dirs, DB, .env, admin user)
 Write-Step "Running first-time setup"

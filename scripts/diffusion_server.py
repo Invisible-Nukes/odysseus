@@ -11,6 +11,16 @@ import os
 import sys
 import importlib
 import importlib.machinery
+# Prefer the Odysseus-managed HF cache under DATA_DIR unless the operator
+# explicitly sets HF_HOME or HUGGINGFACE_HUB_CACHE. This must be set before
+# importing huggingface_hub-related helpers elsewhere in this module.
+try:
+    from src.constants import HUGGINGFACE_HOME, HUGGINGFACE_HUB_CACHE
+    os.environ.setdefault("HF_HOME", HUGGINGFACE_HOME)
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", HUGGINGFACE_HUB_CACHE)
+except Exception:
+    pass
+
 # Block xformers — create a fake module that reports as not installed
 _fake = type(sys)("xformers")
 _fake.__version__ = "0.0.0"

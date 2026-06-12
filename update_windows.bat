@@ -12,8 +12,27 @@ echo.
 where git >nul 2>nul
 if errorlevel 1 (
   echo [!] Git was not found on PATH.
-  echo     Install Git for Windows, then run this script again.
-  goto :fail
+  rem Try common Git for Windows install locations and add to PATH for this session
+  if exist "%ProgramFiles%\Git\cmd\git.exe" (
+    set "GIT_DIR=%ProgramFiles%\Git\cmd"
+    set "PATH=%GIT_DIR%;%PATH%"
+  ) else if exist "%ProgramFiles(x86)%\Git\cmd\git.exe" (
+    set "GIT_DIR=%ProgramFiles(x86)%\Git\cmd"
+    set "PATH=%GIT_DIR%;%PATH%"
+  ) else if exist "%LocalAppData%\Programs\Git\cmd\git.exe" (
+    set "GIT_DIR=%LocalAppData%\Programs\Git\cmd"
+    set "PATH=%GIT_DIR%;%PATH%"
+  ) else (
+    echo     Install Git for Windows, then run this script again.
+    goto :fail
+  )
+  rem Re-check for git after probing common locations
+  where git >nul 2>nul
+  if errorlevel 1 (
+    echo [!] Still could not find Git after probing common locations.
+    echo     Install Git for Windows or add it to PATH, then run this script again.
+    goto :fail
+  )
 )
 
 where docker >nul 2>nul

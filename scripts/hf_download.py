@@ -150,6 +150,15 @@ def main():
     # Disable HF progress bars (we provide our own)
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "0"
 
+    # Centralize HF cache under the app DATA_DIR unless the operator overrides HF_HOME.
+    try:
+        from src.constants import HUGGINGFACE_HOME, HUGGINGFACE_HUB_CACHE
+        os.environ.setdefault("HF_HOME", HUGGINGFACE_HOME)
+        os.environ.setdefault("HUGGINGFACE_HUB_CACHE", HUGGINGFACE_HUB_CACHE)
+    except Exception:
+        # Best-effort; if importing constants fails (script run outside repo), continue.
+        pass
+
     # Enable Rust-backed parallel downloader if available — big throughput win.
     # Must be set before importing huggingface_hub.
     try:
