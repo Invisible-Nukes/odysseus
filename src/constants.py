@@ -57,6 +57,19 @@ MEMORY_VECTORS_DIR = os.path.join(DATA_DIR, "memory_vectors")
 MAIL_ATTACHMENTS_DIR = os.getenv("ODYSSEUS_MAIL_ATTACHMENTS_DIR", os.path.join(DATA_DIR, "mail-attachments"))
 FASTEMBED_CACHE_DIR = os.getenv("FASTEMBED_CACHE_PATH", os.path.join(DATA_DIR, "fastembed_cache"))
 
+# HuggingFace cache defaults — ensure model downloads live under DATA_DIR by default.
+# Override with HF_HOME or HUGGINGFACE_HUB_CACHE env vars if desired (keeps backward compatibility).
+HUGGINGFACE_HOME = os.getenv("HF_HOME", os.path.join(DATA_DIR, "huggingface"))
+HUGGINGFACE_HUB_CACHE = os.getenv("HUGGINGFACE_HUB_CACHE", os.path.join(HUGGINGFACE_HOME, "hub"))
+
+# Ollama headless defaults — prefer installing into the repo-managed data tree so
+# binaries and model files don't land arbitrarily on the host machine.
+OLLAMA_HOME = os.getenv("OLLAMA_HOME", os.path.join(DATA_DIR, "ollama"))
+# OLLAMA_BIN is the directory containing the ollama executable(s). On Windows
+# some distributions put the exe in the top-level folder, but callers should
+# join OLLAMA_BIN with the executable name as appropriate.
+OLLAMA_BIN = os.getenv("OLLAMA_BIN", os.path.join(OLLAMA_HOME, "bin"))
+
 # Agent tool output limits (single source of truth — imported by tool_execution.py,
 # tool_implementations.py, agent_tools.py, and any other module that needs them)
 MAX_OUTPUT_CHARS = 10_000       # cap for bash/python/web_search/web_fetch output

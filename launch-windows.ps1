@@ -62,6 +62,39 @@ function Find-GitBash {
     return $null
 }
 
+function Find-GitExe {
+    # Try Get-Command first (may be on PATH). If not, probe common Git for Windows install locations.
+    $cmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    $candidates = @(
+        (Join-Path $env:ProgramFiles "Git\cmd\git.exe"),
+        (Join-Path $env:ProgramFiles "Git\bin\git.exe"),
+        (Join-Path $env:'ProgramFiles(x86)' "Git\cmd\git.exe"),
+        (Join-Path $env:LocalAppData "Programs\Git\cmd\git.exe"),
+        "C:\Program Files\Git\cmd\git.exe",
+        "C:\Program Files (x86)\Git\cmd\git.exe"
+    )
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if (Test-Path $candidate) { return $candidate }
+    }
+    return $null
+}
+
+# If we can find git.exe, ensure its containing dir is on PATH for this process so subsequent commands work.
+$gitExe = Find-GitExe
+if ($gitExe) {
+    $gitBin = Split-Path $gitExe -Parent
+    if (-not ($env:PATH.ToLower().Contains($gitBin.ToLower()))) {
+        $env:PATH = "$gitBin;$env:PATH"
+    }
+} else {
+    Write-Host ""
+    Write-Host "WARNING: git.exe not found on PATH." -ForegroundColor Yellow
+    Write-Host "         Install Git for Windows or add its cmd/bin directory to PATH." -ForegroundColor Yellow
+    Write-Host "         https://git-scm.com/download/win" -ForegroundColor Yellow
+}
+
 # 1. Locate a Python interpreter (3.11+ required)
 Write-Step "Checking for Python"
 function Get-PythonVersionText($launcher, $launcherArgs) {
@@ -139,6 +172,38 @@ if (-not (Find-GitBash)) {
     Write-Host "      The core app works without it. For full Cookbook background" -ForegroundColor Yellow
     Write-Host "      downloads and the agent shell tool, install Git for Windows:" -ForegroundColor Yellow
     Write-Host "      https://git-scm.com/download/win" -ForegroundColor Yellow
+}
+
+# 5b. Ensure Ollama headless is available under the Odysseus data tree.
+Write-Step "Checking for Ollama"
+$ollamaData = $env:ODYSSEUS_DATA_DIR
+if (-not $ollamaData) { $ollamaData = Join-Path $PSScriptRoot "data" }
+$ollamaDir = Join-Path $ollamaData "ollama"
+$ollamaExe = Join-Path $ollamaDir "ollama.exe"
+
+if (-not (Test-Path $ollamaExe)) {
+    Write-Host "Ollama not found at $ollamaDir. Attempting install via scripts\install_ollama.ps1" -ForegroundColor Cyan
+    $installScript = Join-Path $PSScriptRoot "scripts\install_ollama.ps1"
+    if (Test-Path $installScript) {
+        & powershell -ExecutionPolicy Bypass -File $installScript
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Ollama install failed or was skipped. Continuing without Ollama." -ForegroundColor Yellow
+        } else {
+            if (Test-Path $ollamaExe) {
+                $ollamaBin = Split-Path $ollamaExe -Parent
+                if (-not ($env:PATH.ToLower().Contains($ollamaBin.ToLower()))) {
+                    $env:PATH = "$ollamaBin;$env:PATH"
+                }
+            }
+        }
+    } else {
+        Write-Host "Install script not found: $installScript" -ForegroundColor Yellow
+    }
+} else {
+    $ollamaBin = Split-Path $ollamaExe -Parent
+    if (-not ($env:PATH.ToLower().Contains($ollamaBin.ToLower()))) {
+        $env:PATH = "$ollamaBin;$env:PATH"
+    }
 }
 
 # 6. Start the server (use `python -m uvicorn` - bare `uvicorn` may not be on PATH)
