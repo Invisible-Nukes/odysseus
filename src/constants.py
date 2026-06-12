@@ -65,10 +65,13 @@ HUGGINGFACE_HUB_CACHE = os.getenv("HUGGINGFACE_HUB_CACHE", os.path.join(HUGGINGF
 # Ollama headless defaults — prefer installing into the repo-managed data tree so
 # binaries and model files don't land arbitrarily on the host machine.
 OLLAMA_HOME = os.getenv("OLLAMA_HOME", os.path.join(DATA_DIR, "ollama"))
-# OLLAMA_BIN is the directory containing the ollama executable(s). On Windows
-# some distributions put the exe in the top-level folder, but callers should
-# join OLLAMA_BIN with the executable name as appropriate.
-OLLAMA_BIN = os.getenv("OLLAMA_BIN", os.path.join(OLLAMA_HOME, "bin"))
+# OLLAMA_BIN is the directory containing the ollama executable(s). On Windows the
+# distribution may place the exe in the top-level install folder; on Unix-like
+# systems it is often under `bin`.
+if os.name == "nt":
+    OLLAMA_BIN = os.getenv("OLLAMA_BIN", OLLAMA_HOME)
+else:
+    OLLAMA_BIN = os.getenv("OLLAMA_BIN", os.path.join(OLLAMA_HOME, "bin"))
 
 # Agent tool output limits (single source of truth — imported by tool_execution.py,
 # tool_implementations.py, agent_tools.py, and any other module that needs them)

@@ -21,6 +21,12 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
+if (-not $env:ODYSSEUS_DATA_DIR) { $env:ODYSSEUS_DATA_DIR = Join-Path $PSScriptRoot "..\data" }
+if (-not $env:HF_HOME) { $env:HF_HOME = Join-Path $env:ODYSSEUS_DATA_DIR "huggingface" }
+if (-not $env:HUGGINGFACE_HUB_CACHE) { $env:HUGGINGFACE_HUB_CACHE = Join-Path $env:HF_HOME "hub" }
+if (-not $env:OLLAMA_HOME) { $env:OLLAMA_HOME = Join-Path $env:ODYSSEUS_DATA_DIR "ollama" }
+if (-not $env:OLLAMA_BIN) { $env:OLLAMA_BIN = $env:OLLAMA_HOME }
+
 function Write-Step($msg) { Write-Host ""; Write-Host ("==> " + $msg) -ForegroundColor Cyan }
 function Fail($msg) {
     Write-Host ""
@@ -28,6 +34,33 @@ function Fail($msg) {
     Write-Host ""
     Read-Host "Press Enter to exit"
     exit 1
+}
+
+function Get-OdysseusProcesses {
+    try {
+        $repoRoot = $PSScriptRoot
+        $processes = Get-CimInstance Win32_Process
+        return $processes | Where-Object {
+            if (-not $_.CommandLine) { return $false }
+            if ($_.ProcessId -eq $PID) { return $false }
+            $cmd = $_.CommandLine
+            return ($cmd -match "uvicorn") -or ($cmd -match "app:app") -or ($cmd -match "odysseus") -or ($cmd -match [regex]::Escape($repoRoot))
+        }
+    } catch {
+        return @()
+    }
+}
+
+function Stop-OdysseusProcesses {
+    $procs = Get-OdysseusProcesses
+    if (-not $procs) { return }
+    Write-Host ""
+    Write-Host "Stopping existing Odysseus-related processes..." -ForegroundColor Yellow
+    foreach ($proc in $procs) {
+        Write-Host ("  PID {0}: {1}" -f $proc.ProcessId, $proc.CommandLine)
+        try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    Start-Sleep -Milliseconds 500
 }
 
 function Test-WindowsBashStub($path) {
@@ -96,6 +129,7 @@ if ($gitExe) {
 }
 
 # 1. Locate a Python interpreter (3.11+ required)
+Stop-OdysseusProcesses
 Write-Step "Checking for Python"
 function Get-PythonVersionText($launcher, $launcherArgs) {
     try {
