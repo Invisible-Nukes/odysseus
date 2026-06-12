@@ -156,9 +156,27 @@ if (-not (Test-Path $venvPy)) {
 
 # 3. Install / update dependencies
 Write-Step "Installing dependencies (first run can take a few minutes)"
-& $venvPy -m pip install --upgrade pip --quiet
-& $venvPy -m pip install -r requirements.txt
-if ($LASTEXITCODE -ne 0) { Fail "Dependency install failed. Scroll up for the pip error." }
+# Write full pip output to a timestamped log under the repo data/logs so failures are visible.
+$logsDir = Join-Path $PSScriptRoot "..\data\logs"
+if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
+$ts = (Get-Date).ToString("yyyyMMdd_HHmmss")
+$installLog = Join-Path $logsDir ("pip_install_$ts.log")
+
+Write-Host "Installing Python packages; logging to $installLog"
+& $venvPy -m pip install --upgrade pip > $installLog 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "pip upgrade failed. See $installLog" -ForegroundColor Red
+    Get-Content -Path $installLog -Tail 50 | ForEach-Object { Write-Host $_ }
+    Fail "Dependency install failed during pip upgrade. See the log above."
+}
+
+& $venvPy -m pip install -r requirements.txt > $installLog 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Dependency install failed. Last 100 lines from $installLog:" -ForegroundColor Red
+    Get-Content -Path $installLog -Tail 100 | ForEach-Object { Write-Host $_ }
+    Fail "Dependency install failed. Inspect $installLog for details."
+}
+Write-Host "Dependencies installed successfully (log: $installLog)" -ForegroundColor Green
 
 # 4. First-time setup (creates data dirs, DB, .env, admin user)
 Write-Step "Running first-time setup"

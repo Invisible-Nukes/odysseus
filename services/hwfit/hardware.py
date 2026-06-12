@@ -130,6 +130,11 @@ def _detect_nvidia():
     for idx, line in enumerate(out.strip().split("\n")):
         parts = [p.strip() for p in line.split(",")]
         if len(parts) >= 2:
+            # Filter out generic/virtual adapters (e.g. Microsoft Hyper-V Video)
+            name_l = parts[1].lower() if parts[1] else ""
+            if "microsoft hyper" in name_l or "hyper-v" in name_l or "microsoft basic display" in name_l:
+                # Skip virtual display adapters that are not real GPUs.
+                continue
             try:
                 vram_mb = float(parts[0])
                 gpus.append({"index": idx, "name": parts[1], "vram_gb": vram_mb / 1024.0})

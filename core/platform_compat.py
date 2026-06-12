@@ -277,6 +277,138 @@ def which_tool(name: str) -> Optional[str]:
     return None
 
 
+def find_git() -> Optional[str]:
+    """Locate the git executable, probing PATH then common install locations.
+
+    Returns the full path to git if found, otherwise None.
+    """
+    # Try a normal which first (covers POSIX + Windows PATHEXT variants)
+    git = which_tool("git")
+    if git:
+        return git
+
+    # On Windows, probe common Git for Windows install locations
+    if IS_WINDOWS:
+        candidates = []
+        try:
+            pf = os.environ.get("ProgramFiles")
+            if pf:
+                candidates.append(ntpath.join(pf, "Git", "cmd", "git.exe"))
+                candidates.append(ntpath.join(pf, "Git", "bin", "git.exe"))
+        except Exception:
+            pass
+        try:
+            pf86 = os.environ.get("ProgramFiles(x86)")
+            if pf86:
+                candidates.append(ntpath.join(pf86, "Git", "cmd", "git.exe"))
+        except Exception:
+            pass
+        try:
+            lad = os.environ.get("LocalAppData")
+            if lad:
+                candidates.append(ntpath.join(lad, "Programs", "Git", "cmd", "git.exe"))
+        except Exception:
+            pass
+        # Add fallback defaults
+        candidates.extend([
+            r"C:\Program Files\Git\cmd\git.exe",
+            r"C:\Program Files (x86)\Git\cmd\git.exe",
+        ])
+        for cand in (c for c in candidates if c):
+            if os.path.exists(cand):
+                return cand
+    return None
+
+
+# --- Ollama and CPU feature helpers -------------------------------------------------
+
+def find_ollama() -> Optional[str]:
+    """Locate an Ollama executable.
+
+    Prefer an Ollama binary under the repo-managed OLLAMA_HOME, falling back
+    to PATH (which_tool). Returns the full executable path or None.
+    """
+    # Try OLLAMA_HOME first
+    try:
+        from src.constants import OLLAMA_HOME, OLLAMA_BIN
+        # On Windows the binary is usually ollama.exe in OLLAMA_HOME
+        candidates = [
+            os.path.join(OLLAMA_BIN, "ollama.exe"),
+            os.path.join(OLLAMA_HOME, "ollama.exe"),
+            os.path.join(OLLAMA_HOME, "bin", "ollama.exe"),
+        ]
+        for c in candidates:
+            if c and os.path.exists(c):
+                return c
+    except Exception:
+        pass
+
+    # Fallback to PATH
+    o = which_tool("ollama")
+    if o:
+        return o
+    return None
+
+
+def detect_cpu_features() -> dict:
+    """Best-effort CPU feature probe.
+
+    Returns a dict with keys: avx, avx2, fma, sse4_2, flags (set) and 'source'.
+    Uses python 'cpuinfo' if available; otherwise performs a minimal OS probe
+    and returns conservative defaults (False) with source='fallback'.
+    """
+    features = {"avx": False, "avx2": False, "fma": False, "sse4_2": False, "flags": set(), "source": "none"}
+    try:
+        import cpuinfo
+        info = cpuinfo.get_cpu_info()
+        flags = set([f.lower() for f in (info.get("flags") or [])])
+        features.update({
+            "avx": "avx" in flags,
+            "avx2": "avx2" in flags,
+            "fma": "fma" in flags,
+            "sse4_2": "sse4_2" in flags,
+            "flags": flags,
+            "source": "cpuinfo",
+        })
+        return features
+    except Exception:
+        # Try a light-weight Windows WMI probe for keywords in the CPU name
+        if IS_WINDOWS:
+            try:
+                out = None
+                import subprocess
+                r = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name"], capture_output=True, text=True, timeout=3)
+                out = (r.stdout or "").lower()
+                if out:
+                    # heuristics: modern Intel/AMD model names often imply AVX
+                    features["avx"] = "avx" in out or "advanced vector" in out
+                    features["avx2"] = "avx2" in out
+                    features["sse4_2"] = "sse4" in out or "sse4.2" in out
+                    features["source"] = "wmi-name-heuristic"
+                    return features
+            except Exception:
+                pass
+        # Fallback: unknown, keep all False but mark source
+        features["source"] = "fallback"
+        return features
+
+
+def should_prefer_ollama() -> bool:
+    """Return True when Ollama should be preferred due to missing CPU features.
+
+    Conservative rule: if avx2 is unavailable but an Ollama binary is present,
+    prefer Ollama.
+    """
+    try:
+        feats = detect_cpu_features()
+        if not feats.get("avx2"):
+            if find_ollama():
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def run_script_argv(script_path) -> List[str]:
     """argv to execute a shell *script file*.
 

@@ -198,17 +198,20 @@ def _pip_install_attempt(pip_cmd: str) -> str:
     """Wrap a single pip install command so its exit status survives the
     fallback chain and its stderr is visible in the tmux log on failure.
 
-    Without this wrapper, `pip … 2>&1 | tail -5` returns ``tail``'s exit
-    code (0), masking pip's real failure and preventing the next fallback
-    from running.  The generated snippet captures all output to a temp
-    file, prints the last 5 lines on failure (so the Cookbook log panel
-    shows useful diagnostics), cleans up, and exits with pip's original
-    status.
+    Writes a persistent per-attempt log into ${DATA_DIR:-./data}/logs so
+    operators can inspect the full pip output after the task finishes.
+    On success the wrapper echoes the log path prefixed with "OK"; on
+    failure it prints the last lines and leaves the log for inspection.
     """
+    # Ensure the logs directory exists and write to a named temp file there so
+    # logs persist beyond the lifetime of the shell. Use mktemp to avoid races.
     return (
         "bash -c '"
-        f'_out=$(mktemp) && {pip_cmd} >"$_out" 2>&1; _rc=$?; '
-        'tail -5 "$_out"; rm -f "$_out"; exit $_rc'
+        'mkdir -p "${DATA_DIR:-./data}/logs"; '
+        f'LOGFILE=$(mktemp "${{DATA_DIR:-./data}}/logs/pip_install.XXXXXX.log"); '
+        f'{pip_cmd} >"$LOGFILE" 2>&1; _rc=$?; '
+        'if [ $_rc -eq 0 ]; then echo "OK $LOGFILE"; else echo "ERROR (last 100 lines) from $LOGFILE"; tail -100 "$LOGFILE"; fi; '
+        'exit $_rc'
         "'"
     )
 
