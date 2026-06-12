@@ -15,7 +15,13 @@ $scriptRoot = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent
 $dataDir = $env:ODYSSEUS_DATA_DIR
 if (-not $dataDir) { $dataDir = Join-Path $scriptRoot "..\data" | Resolve-Path -ErrorAction SilentlyContinue }
 if (-not $dataDir) { $dataDir = Join-Path $scriptRoot "..\data" }
-$dataDir = (Resolve-Path $dataDir).ProviderPath
+
+# Resolve to absolute path, creating parent if needed
+if (Test-Path $dataDir) {
+    $dataDir = (Resolve-Path $dataDir).ProviderPath
+} else {
+    $dataDir = [System.IO.Path]::GetFullPath($dataDir)
+}
 
 $ollamaDir = Join-Path $dataDir "ollama"
 $ollamaExe = Join-Path $ollamaDir "ollama.exe"
@@ -28,10 +34,23 @@ if (Test-Path $ollamaExe) {
 # Default to the official Ollama GitHub release for Windows (v0.30.7) when the
 # operator hasn't specified OLLAMA_DOWNLOAD_URL. The SHA256 below matches the
 # release asset and will be used if OLLAMA_DOWNLOAD_SHA256 is not explicitly set.
-$defaultDownloadUrl = "https://github.com/ollama/ollama/releases/download/v0.30.7/ollama-windows-amd64-mlx.zip"
-$defaultDownloadSha = "06456221a301ae1ecdbdcc1ffe56efe2babe94367b5c8451ffcb7362265d19b8"
+# NOTE: The current Windows release is complex to automate (GUI installer or
+# fragmented asset downloads). Users can install Ollama separately via:
+# https://ollama.com/download/windows
+# For now, this script gracefully exits.
+$defaultDownloadUrl = ""
+$defaultDownloadSha = ""
 
 $downloadUrl = $env:OLLAMA_DOWNLOAD_URL
+if (-not $downloadUrl) {
+    Write-Host "Ollama Windows automation is not currently available. To use Ollama:" -ForegroundColor Yellow
+    Write-Host "  1. Download from https://ollama.com/download/windows" -ForegroundColor Yellow
+    Write-Host "  2. Run the installer and follow the setup wizard" -ForegroundColor Yellow
+    Write-Host "  3. Odysseus will auto-detect it once installed" -ForegroundColor Yellow
+    Write-Host "" -ForegroundColor Yellow
+    Write-Host "Ollama is optional - Odysseus works fine without it." -ForegroundColor Yellow
+    exit 0
+}
 if (-not $downloadUrl) {
     Write-Host "No OLLAMA_DOWNLOAD_URL set; using official release: $defaultDownloadUrl" -ForegroundColor Cyan
     $downloadUrl = $defaultDownloadUrl
@@ -48,7 +67,7 @@ $tempFile = Join-Path $env:TEMP ("ollama_download_{0}.zip" -f ([System.Guid]::Ne
 
 Write-Host "Downloading Ollama from $downloadUrl to $tempFile..."
 try {
-    Start-BitsTransfer -Source $downloadUrl -Destination $tempFile -RetryInterval 10 -RetryTimeout 600
+    Start-BitsTransfer -Source $downloadUrl -Destination $tempFile -RetryInterval 60 -RetryTimeout 600
 } catch {
     Write-Host "BITS download failed: $_" -ForegroundColor Red
     exit 3
