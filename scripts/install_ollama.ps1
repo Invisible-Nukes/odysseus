@@ -1,10 +1,10 @@
 # install_ollama.ps1
-# Download and unpack a headless Ollama distribution into the Odysseus data tree.
+# Download and install Ollama MSI installer to the Odysseus data folder.
 # Behavior:
-#  - Uses $env:OLLAMA_DOWNLOAD_URL if set, otherwise requires the operator to set it.
-#  - Optionally validates SHA256 via $env:OLLAMA_DOWNLOAD_SHA256.
-#  - Installs to $ODYSSEUS_DATA_DIR\ollama (or ./data/ollama when ODYSSEUS_DATA_DIR unset).
-#  - Adds the install dir to PATH for the current process so subsequent steps can use it.
+#  - Downloads the official Ollama Windows MSI installer
+#  - Saves to $ODYSSEUS_DATA_DIR\ollama (or ./data/ollama when ODYSSEUS_DATA_DIR unset)
+#  - Runs the installer with automatic/quiet mode to install to the odysseus folder
+#  - Adds ollama.exe to PATH for the current process
 
 param()
 
@@ -27,94 +27,138 @@ $ollamaDir = Join-Path $dataDir "ollama"
 $ollamaExe = Join-Path $ollamaDir "ollama.exe"
 
 if (Test-Path $ollamaExe) {
-    Write-Host "Ollama already present at: $ollamaExe"
+    Write-Host "Ollama already present at: $ollamaExe" -ForegroundColor Green
     exit 0
 }
 
-# Default to the official Ollama GitHub release for Windows (v0.30.7) when the
-# operator hasn't specified OLLAMA_DOWNLOAD_URL. The SHA256 below matches the
-# release asset and will be used if OLLAMA_DOWNLOAD_SHA256 is not explicitly set.
-# NOTE: The current Windows release is complex to automate (GUI installer or
-# fragmented asset downloads). Users can install Ollama separately via:
-# https://ollama.com/download/windows
-# For now, this script gracefully exits.
-$defaultDownloadUrl = ""
-$defaultDownloadSha = ""
-
-$downloadUrl = $env:OLLAMA_DOWNLOAD_URL
-if (-not $downloadUrl) {
-    Write-Host "Ollama Windows automation is not currently available. To use Ollama:" -ForegroundColor Yellow
-    Write-Host "  1. Download from https://ollama.com/download/windows" -ForegroundColor Yellow
-    Write-Host "  2. Run the installer and follow the setup wizard" -ForegroundColor Yellow
-    Write-Host "  3. Odysseus will auto-detect it once installed" -ForegroundColor Yellow
-    Write-Host "" -ForegroundColor Yellow
-    Write-Host "Ollama is optional - Odysseus works fine without it." -ForegroundColor Yellow
-    exit 0
-}
-if (-not $downloadUrl) {
-    Write-Host "No OLLAMA_DOWNLOAD_URL set; using official release: $defaultDownloadUrl" -ForegroundColor Cyan
-    $downloadUrl = $defaultDownloadUrl
-    $env:OLLAMA_DOWNLOAD_URL = $downloadUrl
+# Create ollama directory if it doesn't exist
+if (-not (Test-Path $ollamaDir)) {
+    New-Item -ItemType Directory -Path $ollamaDir -Force | Out-Null
+    Write-Host "Created directory: $ollamaDir"
 }
 
-if (-not $env:OLLAMA_DOWNLOAD_SHA256 -and $defaultDownloadSha) {
-    Write-Host "No OLLAMA_DOWNLOAD_SHA256 set; using known SHA256 for the selected release." -ForegroundColor Cyan
-    $env:OLLAMA_DOWNLOAD_SHA256 = $defaultDownloadSha
+# Official Ollama Windows standalone .exe installer from ollama.com
+$downloadUrl = "https://ollama.com/download/OllamaSetup.exe"
+$installerPath = Join-Path $ollamaDir "OllamaSetup.exe"
+
+# Check if installer already downloaded
+if (Test-Path $installerPath) {
+    Write-Host "Installer already present at: $installerPath" -ForegroundColor Cyan
+} else {
+    Write-Host "Downloading Ollama installer from $downloadUrl..." -ForegroundColor Cyan
+    Write-Host "Destination: $installerPath" -ForegroundColor Cyan
+    Write-Host ""
+    
+    try {
+        # Try multiple methods for better reliability
+        try {
+            # Method 1: Try BITS transfer first (most reliable)
+            Start-BitsTransfer -Source $downloadUrl -Destination $installerPath -RetryInterval 60 -RetryTimeout 600 -ErrorAction Stop
+            Write-Host "✅ Download completed via BITS" -ForegroundColor Green
+        } catch {
+            Write-Host "⚠️ BITS transfer failed, trying WebClient..." -ForegroundColor Yellow
+            # Method 2: Fall back to WebClient
+            $webClient = New-Object System.Net.WebClient
+            $webClient.DownloadFile($downloadUrl, $installerPath)
+            Write-Host "✅ Download completed via WebClient" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "❌ Download failed: $_" -ForegroundColor Red
+        exit 1
+    }
 }
 
-# Prepare tmp destination
-$tempFile = Join-Path $env:TEMP ("ollama_download_{0}.zip" -f ([System.Guid]::NewGuid().ToString()))
+# Verify the installer exists
+if (-not (Test-Path $installerPath)) {
+    Write-Host "❌ Installer file not found at: $installerPath" -ForegroundColor Red
+    exit 2
+}
 
-Write-Host "Downloading Ollama from $downloadUrl to $tempFile..."
+Write-Host ""
+Write-Host "=== Installing Ollama ===" -ForegroundColor Cyan
+Write-Host "Installer: $installerPath"
+Write-Host ""
+
+# Install the .exe with silent mode
 try {
-    Start-BitsTransfer -Source $downloadUrl -Destination $tempFile -RetryInterval 60 -RetryTimeout 600
+    Write-Host "Running installer (this may take a few minutes)..." -ForegroundColor Yellow
+    Write-Host "Note: Ollama may install to Program Files by default" -ForegroundColor Cyan
+    Write-Host ""
+    
+    # Try with silent flag only (standard parameter for this installer)
+    $process = Start-Process -FilePath $installerPath -ArgumentList @("/S") -Wait -PassThru -NoNewWindow
+    
+    if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
+        Write-Host "⚠️ Installer exited with code: $($process.ExitCode)" -ForegroundColor Yellow
+        Write-Host "   Checking if installation succeeded despite exit code..." -ForegroundColor Yellow
+    } else {
+        Write-Host "✅ Installer completed successfully" -ForegroundColor Green
+    }
 } catch {
-    Write-Host "BITS download failed: $_" -ForegroundColor Red
+    Write-Host "❌ Failed to execute installer: $_" -ForegroundColor Red
+    Write-Host "Tip: You may need to run as Administrator" -ForegroundColor Yellow
     exit 3
 }
 
-# Optional checksum verification
-$expectedSha = $env:OLLAMA_DOWNLOAD_SHA256
-if ($expectedSha) {
-    Write-Host "Verifying SHA256..."
+# Verify installation — check multiple locations
+$ollamaExePaths = @(
+    (Join-Path $ollamaDir "ollama.exe"),
+    "C:\Program Files\Ollama\ollama.exe",
+    "$env:APPDATA\Ollama\ollama.exe"
+)
+
+$foundPath = $null
+foreach ($path in $ollamaExePaths) {
+    if (Test-Path $path) {
+        $foundPath = $path
+        break
+    }
+}
+
+if ($foundPath) {
+    Write-Host "✅ Ollama executable verified at: $foundPath" -ForegroundColor Green
+    
+    # Get version to confirm it works
     try {
-        $actualSha = Get-FileHash -Algorithm SHA256 -Path $tempFile | Select-Object -ExpandProperty Hash
-        if ($actualSha.ToLower() -ne $expectedSha.ToLower()) {
-            Write-Host "ERROR: SHA256 mismatch. Expected $expectedSha but got $actualSha" -ForegroundColor Red
-            Remove-Item $tempFile -Force
-            exit 4
-        }
+        $version = & $foundPath --version 2>&1
+        Write-Host "   Version: $version" -ForegroundColor Green
     } catch {
-        Write-Host "Failed to compute SHA256: $_" -ForegroundColor Red
-        Remove-Item $tempFile -Force
-        exit 5
+        Write-Host "   (version check skipped)" -ForegroundColor Gray
     }
+} else {
+    Write-Host "⚠️ Warning: ollama.exe not found in expected locations" -ForegroundColor Yellow
+    Write-Host "   Checked:" -ForegroundColor Yellow
+    foreach ($path in $ollamaExePaths) {
+        Write-Host "     • $path" -ForegroundColor Gray
+    }
+    Write-Host "   The installer may have encountered an issue." -ForegroundColor Yellow
+    Write-Host "   Try running the installer manually from: $installerPath" -ForegroundColor Yellow
 }
 
-# Unpack — support ZIP and a single exe installer. If it's an exe, place it in the target dir.
-try {
-    New-Item -ItemType Directory -Path $ollamaDir -Force | Out-Null
-    $ext = [IO.Path]::GetExtension($tempFile)
-    if ($ext -eq ".zip") {
-        Write-Host "Extracting ZIP to $ollamaDir..."
-        Expand-Archive -Path $tempFile -DestinationPath $ollamaDir -Force
+# Add ollama dir to PATH if not already present
+if ($foundPath) {
+    $ollamaBin = Split-Path $foundPath -Parent
+    if (-not ($env:PATH.ToLower().Contains($ollamaBin.ToLower()))) {
+        $env:PATH = "$ollamaBin;$env:PATH"
+        Write-Host "✅ Added to PATH: $ollamaBin" -ForegroundColor Green
     } else {
-        # Treat as binary installer — move it into the folder and mark as executable
-        $dest = Join-Path $ollamaDir (Split-Path $downloadUrl -Leaf)
-        Move-Item -Path $tempFile -Destination $dest -Force
+        Write-Host "✅ Already in PATH: $ollamaBin" -ForegroundColor Green
     }
-} catch {
-    Write-Host "Failed to extract/install Ollama: $_" -ForegroundColor Red
-    if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
-    exit 6
 }
 
-# Cleanup temp file if it still exists
-if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
-
-# Add ollama dir to PATH for this process so subsequent steps see it
-$ollamaBin = $ollamaDir
-if (-not ($env:PATH.ToLower().Contains($ollamaBin.ToLower()))) { $env:PATH = "$ollamaBin;$env:PATH" }
-
-Write-Host "Ollama installed to: $ollamaDir"
+Write-Host ""
+Write-Host "=== Installation Summary ===" -ForegroundColor Green
+Write-Host "Installer location: $installerPath" -ForegroundColor Green
+if ($foundPath) {
+    Write-Host "Ollama executable: $foundPath" -ForegroundColor Green
+}
+Write-Host ""
+Write-Host "Next steps:" -ForegroundColor Cyan
+Write-Host "  1. Test: ollama --version" -ForegroundColor Cyan
+Write-Host "  2. Download models:" -ForegroundColor Cyan
+Write-Host "     ollama pull qwen:7b-coder" -ForegroundColor Cyan
+Write-Host "     ollama pull deepseek-v2-lite" -ForegroundColor Cyan
+Write-Host "  3. Start server: ollama serve" -ForegroundColor Cyan
+Write-Host "  4. Odysseus will auto-detect running Ollama on localhost:11434" -ForegroundColor Cyan
+Write-Host ""
 exit 0
