@@ -396,14 +396,17 @@ def setup_cookbook_routes() -> APIRouter:
         env = os.environ.copy()
         env["PYTHONUTF8"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
-        proc = subprocess.Popen(
-            argv,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            env=env,
-            **detached_popen_kwargs(),
-        )
+        try:
+            proc = subprocess.Popen(
+                argv,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                env=env,
+                **detached_popen_kwargs(),
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Failed to launch detached process: {exc}") from exc
         pid_path.write_text(str(proc.pid), encoding="utf-8")
         return {"pid": proc.pid, "log_path": str(log_path)}
 
@@ -537,14 +540,10 @@ def setup_cookbook_routes() -> APIRouter:
                 # Default to Odysseus-managed HF cache under DATA_DIR when no
                 # explicit local_dir is provided. This keeps downloads inside the
                 # repo's data/ tree by default.
-                try:
-                    from src.constants import HUGGINGFACE_HOME
-                    _dl_ps = _ps_squote(HUGGINGFACE_HOME)
-                    ps_lines.append(f"$env:HF_HOME = '{_dl_ps}'")
-                    ps_lines.append(f"$env:HUGGINGFACE_HUB_CACHE = '{_dl_ps}/hub'")
-                    ps_lines.append(f"$env:HF_HUB_CACHE = '{_dl_ps}/hub'")
-                except Exception:
-                    pass
+                _dl_ps = _ps_squote(HUGGINGFACE_HOME)
+                ps_lines.append(f"$env:HF_HOME = '{_dl_ps}'")
+                ps_lines.append(f"$env:HUGGINGFACE_HUB_CACHE = '{_dl_ps}/hub'")
+                ps_lines.append(f"$env:HF_HUB_CACHE = '{_dl_ps}/hub'")
             if req.env_prefix:
                 ps_lines.append(_safe_env_prefix(req.env_prefix))
             if is_ollama_download:
@@ -733,25 +732,25 @@ def setup_cookbook_routes() -> APIRouter:
         logger.info(f"Model download: {req.repo_id} (backend={'ollama' if is_ollama_download else 'hf'}, include={req.include}, session={session_id}, remote={remote})")
         logger.info(f"Download setup_cmd: {setup_cmd}")
 
-        if setup_cmd is None:
-            # LOCAL Windows: launch the bash wrapper detached; no tmux setup_cmd.
-            try:
+        try:
+            if setup_cmd is None:
+                # LOCAL Windows: launch the bash wrapper detached; no tmux setup_cmd.
                 _launch_local_detached(session_id, lines)
-            except Exception as e:
-                logger.error(f"Local detached download launch failed: {e}")
-                return {"ok": False, "error": str(e), "session_id": session_id}
-        else:
-            proc = await asyncio.create_subprocess_shell(
-                setup_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await proc.wait()
+            else:
+                proc = await asyncio.create_subprocess_shell(
+                    setup_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.wait()
 
-            if proc.returncode != 0:
-                stderr = (await proc.stderr.read()).decode(errors="replace")
-                logger.error(f"Download failed (rc={proc.returncode}): {stderr}")
-                return {"ok": False, "error": stderr, "session_id": session_id}
+                if proc.returncode != 0:
+                    stderr = (await proc.stderr.read()).decode(errors="replace")
+                    logger.error(f"Download failed (rc={proc.returncode}): {stderr}")
+                    return {"ok": False, "error": stderr, "session_id": session_id}
+        except Exception as exc:
+            logger.exception("Model download launch failed for repo=%s", req.repo_id)
+            return {"ok": False, "error": f"Failed to start model download: {exc}", "session_id": session_id}
 
         # Log to assistant
         try:
