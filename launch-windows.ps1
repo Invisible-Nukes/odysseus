@@ -38,6 +38,24 @@ function Fail($msg) {
     throw $msg
 }
 
+function Save-StartupErrorLog($context, $message, $details) {
+    $logsDir = Join-Path $PSScriptRoot "data\logs"
+    if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
+
+    $ts = (Get-Date).ToString("yyyyMMdd_HHmmss")
+    $logPath = Join-Path $logsDir ("startup_error_{0}.log" -f $ts)
+
+    $body = @(
+        "Context: $context",
+        "Message: $message",
+        "",
+        ($details -as [string])
+    ) -join [Environment]::NewLine
+
+    Set-Content -Path $logPath -Value $body -Encoding UTF8
+    return $logPath
+}
+
 function Test-Url($url) {
     try {
         $null = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
@@ -304,16 +322,19 @@ if (Test-Path $cudaBase) {
 Write-Step ("Starting Odysseus at http://{0}:{1}" -f $BindHost, $Port)
 $logsDir = Join-Path $PSScriptRoot "data\logs"
 if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
-$startupLog = Join-Path $logsDir ("uvicorn_{0}.log" -f (Get-Date).ToString("yyyyMMdd_HHmmss"))
+$timestamp = (Get-Date).ToString("yyyyMMdd_HHmmss")
+$startupLog = Join-Path $logsDir ("uvicorn_{0}.log" -f $timestamp)
+$startupErrLog = Join-Path $logsDir ("uvicorn_err_{0}.log" -f $timestamp)
 
 Write-Host ("Server log: " + $startupLog) -ForegroundColor Green
+Write-Host ("Server stderr log: " + $startupErrLog) -ForegroundColor DarkGray
 Write-Host "Press Ctrl+C to stop the server when you are done." -ForegroundColor Yellow
 Write-Host ""
 
 $startupUrl = "http://{0}:{1}" -f $BindHost, $Port
 
 try {
-    $uvicornProcess = Start-Process -FilePath $venvPy -ArgumentList "-m", "uvicorn", "app:app", "--host", $BindHost, "--port", $Port -RedirectStandardOutput $startupLog -RedirectStandardError $startupLog -PassThru -NoNewWindow
+    $uvicornProcess = Start-Process -FilePath $venvPy -ArgumentList "-m", "uvicorn", "app:app", "--host", $BindHost, "--port", $Port -RedirectStandardOutput $startupLog -RedirectStandardError $startupErrLog -PassThru -NoNewWindow
     Write-Host "Starting server in the background..." -ForegroundColor Cyan
     Write-Host ("Server PID: " + $uvicornProcess.Id) -ForegroundColor DarkGray
 
@@ -340,8 +361,10 @@ try {
     if (-not (Get-Process -Id $uvicornProcess.Id -ErrorAction SilentlyContinue)) {
         $logPath = Save-StartupErrorLog "uvicorn startup" "Uvicorn exited before the app became ready" (Get-Content -Path $startupLog -Raw -ErrorAction SilentlyContinue)
         Write-Host "Server startup failed. See log: $logPath" -ForegroundColor Red
-        if (Test-Path $startupLog) {
-            Get-Content -Path $startupLog -Tail 100 | ForEach-Object { Write-Host $_ }
+        foreach ($logFile in @($startupLog, $startupErrLog)) {
+            if (Test-Path $logFile) {
+                Get-Content -Path $logFile -Tail 100 | ForEach-Object { Write-Host $_ }
+            }
         }
         Write-Host "The launcher will stay open so you can inspect the error output." -ForegroundColor Yellow
         return

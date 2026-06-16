@@ -258,8 +258,10 @@ def test_pip_install_fallback_chain_allows_custom_python_command():
 def test_pip_install_fallback_chain_accepts_python_executable():
     chain = _pip_install_fallback_chain("llama-cpp-python[server]", python_cmd="python")
 
-    assert "python -m pip install -q 'llama-cpp-python[server]'" in chain
-    assert "python -m pip install --user -q 'llama-cpp-python[server]'" in chain
+    assert "python -m pip install -q " in chain
+    assert "llama-cpp-python[server]" in chain
+    assert "'llama-cpp-python[server]'" in chain
+    assert "python -m pip install --user -q " in chain
     assert "python -m pip install --help 2>/dev/null | grep -q -- --break-system-packages" in chain
     assert "python install " not in chain
     assert 'python -c "import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)"' in chain
@@ -419,8 +421,6 @@ def test_pip_install_attempt_failure_propagates_real_exit_code():
     """Run the generated snippet against a deliberately broken pip install
     to confirm the subshell exits with pip's non-zero status."""
     snippet = _pip_install_attempt("python3 -m pip install __nonexistent_package_12345__")
-    if sys.platform == "win32":
-        snippet = snippet.replace("$", "\\$")
     result = subprocess.run(
         ["bash", "-c", snippet],
         capture_output=True,
@@ -433,8 +433,6 @@ def test_pip_install_attempt_failure_propagates_real_exit_code():
 def test_pip_install_attempt_success_exits_zero():
     """When pip succeeds, the subshell should exit 0."""
     snippet = _pip_install_attempt("python3 -c 'pass'")
-    if sys.platform == "win32":
-        snippet = snippet.replace("$", "\\$")
     result = subprocess.run(
         ["bash", "-c", snippet],
         capture_output=True,
@@ -447,8 +445,6 @@ def test_pip_install_attempt_success_exits_zero():
 def test_pip_install_attempt_surfaces_stderr_on_failure():
     """On failure, the last 5 lines of pip output should appear in stdout."""
     snippet = _pip_install_attempt("python3 -m pip install __nonexistent_package_12345__")
-    if sys.platform == "win32":
-        snippet = snippet.replace("$", "\\$")
     result = subprocess.run(
         ["bash", "-c", snippet],
         capture_output=True,

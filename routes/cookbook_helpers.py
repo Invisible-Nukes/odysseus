@@ -205,15 +205,29 @@ def _pip_install_attempt(pip_cmd: str) -> str:
     """
     # Ensure the logs directory exists and write to a named temp file there so
     # logs persist beyond the lifetime of the shell. Use mktemp to avoid races.
-    return (
-        "bash -c '"
+    normalized_cmd = pip_cmd
+
+    script = (
         'mkdir -p "${DATA_DIR:-./data}/logs"; '
-        f'LOGFILE=$(mktemp "${{DATA_DIR:-./data}}/logs/pip_install.XXXXXX.log"); '
-        f'{pip_cmd} >"$LOGFILE" 2>&1; _rc=$?; '
-        'if [ $_rc -eq 0 ]; then echo "OK $LOGFILE"; else echo "ERROR (last 100 lines) from $LOGFILE"; tail -100 "$LOGFILE"; fi; '
+        'TMP_LOGFILE=$(mktemp); '
+        'LOGFILE="${DATA_DIR:-./data}/logs/pip_install.$(basename "$TMP_LOGFILE").log"; '
+        'if command -v python3 >/dev/null 2>&1; then '
+        '  _odys_py3="$(command -v python3 2>/dev/null || true)"; '
+        '  case "$_odys_py3" in ""|*[Ww]indows[Aa]pps*) python3() { python "$@"; } ;; esac; '
+        'else '
+        '  python3() { python "$@"; }; '
+        'fi; '
+        'command -v python >/dev/null 2>&1 || python() { python3 "$@"; }; '
+        f'{normalized_cmd} >"$TMP_LOGFILE" 2>&1; _rc=$?; '
+        'mv "$TMP_LOGFILE" "$LOGFILE"; '
+        'if [ $_rc -eq 0 ]; then echo "OK $LOGFILE"; else echo "ERROR (last 5 lines) from $LOGFILE"; tail -5 "$LOGFILE"; fi; '
+        'rm -f "$TMP_LOGFILE"; '
         'exit $_rc'
-        "'"
     )
+
+    if "'" in script:
+        return 'bash -c "' + script.replace('"', '\\"') + '"'
+    return "bash -c '" + script.replace("'", "'\"'\"'") + "'"
 
 
 def _pip_command(python_cmd: str) -> str:
