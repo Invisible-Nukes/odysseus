@@ -175,6 +175,14 @@ if (-not $pyExe) {
     }
 }
 
+if ($pyExe -like "*WindowsApps*python.exe") {
+    $pyCmd = Get-Command py -ErrorAction SilentlyContinue
+    if ($pyCmd) {
+        $pyExe = $pyCmd.Source
+        $pyArgs = @("-3.11")
+    }
+}
+
 if (-not $pyExe) {
     Fail "Couldn't find Python 3.11+ for Windows setup. Install Python 3.11+ (or open the Python launcher with 'py -3.11') from https://www.python.org/downloads/, then re-run this script."
 }
@@ -262,8 +270,44 @@ if (-not (Test-Path $ollamaExe)) {
     }
 }
 
-# 6. Start the server (use `python -m uvicorn` - bare `uvicorn` may not be on PATH)
+# 6. Point CUDA_PATH at a real CUDA toolkit so GPU llama-cpp-python can import.
+$cudaBase = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
+if (Test-Path $cudaBase) {
+    $cudaBest = Get-ChildItem $cudaBase -Directory -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path (Join-Path $_.FullName "bin") } |
+        Sort-Object { try { [version]($_.Name -replace "^v", "") } catch { [version]"0.0" } } -Descending |
+        Select-Object -First 1
+    if ($cudaBest) {
+        $env:CUDA_PATH = $cudaBest.FullName
+        Write-Host ("Using CUDA_PATH = " + $cudaBest.FullName) -ForegroundColor Cyan
+    }
+}
+
+# 7. Start the server (use `python -m uvicorn` - bare `uvicorn` may not be on PATH)
 Write-Step ("Starting Odysseus at http://{0}:{1}" -f $BindHost, $Port)
-Write-Host "Press Ctrl+C to stop."
+$logsDir = Join-Path $PSScriptRoot "data\logs"
+if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
+$startupLog = Join-Path $logsDir ("uvicorn_{0}.log" -f (Get-Date).ToString("yyyyMMdd_HHmmss"))
+
+Write-Host ("Server log: " + $startupLog) -ForegroundColor Green
+Write-Host "Press Ctrl+C to stop the server when you are done." -ForegroundColor Yellow
 Write-Host ""
-& $venvPy -m uvicorn app:app --host $BindHost --port $Port
+
+try {
+    & $venvPy -m uvicorn app:app --host $BindHost --port $Port *> $startupLog 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $logPath = Save-StartupErrorLog "uvicorn startup" "Uvicorn exited with code $LASTEXITCODE" (Get-Content -Path $startupLog -Raw -ErrorAction SilentlyContinue)
+        Write-Host "Server startup failed. See log: $logPath" -ForegroundColor Red
+        if (Test-Path $startupLog) {
+            Get-Content -Path $startupLog -Tail 100 | ForEach-Object { Write-Host $_ }
+        }
+        Read-Host "Press Enter to exit"
+        exit $LASTEXITCODE
+    }
+} catch {
+    $logPath = Save-StartupErrorLog "uvicorn startup" "Uvicorn threw an exception" $_
+    Write-Host "Server startup failed. See log: $logPath" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Read-Host "Press Enter to exit"
+    exit 1
+}
