@@ -90,15 +90,51 @@ function Get-OdysseusProcesses {
 }
 
 function Stop-OdysseusProcesses {
-    $procs = Get-OdysseusProcesses
+    $procs = Get-OdysseusProcesses | Sort-Object ProcessId -Unique
     if (-not $procs) { return }
+
     Write-Host ""
     Write-Host "Stopping existing Odysseus-related processes..." -ForegroundColor Yellow
     foreach ($proc in $procs) {
         Write-Host ("  PID {0}: {1}" -f $proc.ProcessId, $proc.CommandLine)
-        try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+        try {
+            & taskkill /F /T /PID $proc.ProcessId 2>$null | Out-Null
+        } catch {}
+        try {
+            Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+        } catch {}
     }
-    Start-Sleep -Milliseconds 500
+    Start-Sleep -Milliseconds 1000
+
+    # Give Windows a moment to release sockets and child handles before we reset state.
+    $stillRunning = Get-OdysseusProcesses | Where-Object { $_.ProcessId -in ($procs | Select-Object -ExpandProperty ProcessId) }
+    if ($stillRunning) {
+        Start-Sleep -Milliseconds 1500
+    }
+}
+
+function Clear-OdysseusRuntimeArtifacts {
+    $artifactRoots = @(
+        (Join-Path $PSScriptRoot "data\logs"),
+        (Join-Path $PSScriptRoot "data\cache"),
+        (Join-Path $PSScriptRoot "data\downloads"),
+        (Join-Path $PSScriptRoot "data\generated_images"),
+        (Join-Path $PSScriptRoot "data\tts_cache")
+    )
+
+    foreach ($root in $artifactRoots) {
+        if (Test-Path $root) {
+            Write-Host ("Clearing stale runtime artifacts under {0}" -f $root) -ForegroundColor DarkGray
+            Get-ChildItem -Path $root -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    Get-ChildItem -Path $PSScriptRoot -Recurse -Directory -Filter "__pycache__" -Force -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $PSScriptRoot -Recurse -File -Filter "*.pyc" -Force -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $PSScriptRoot -Recurse -Directory -Filter ".pytest_cache" -Force -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 function Test-WindowsBashStub($path) {
@@ -166,8 +202,9 @@ if ($gitExe) {
     Write-Host "         https://git-scm.com/download/win" -ForegroundColor Yellow
 }
 
-# 1. Locate a Python interpreter (3.11+ required)
+# 1. Stop any stale Odysseus runtime, then wipe old logs/cache before reloading venv.
 Stop-OdysseusProcesses
+Clear-OdysseusRuntimeArtifacts
 Write-Step "Checking for Python"
 function Get-PythonVersionText($launcher, $launcherArgs) {
     try {
