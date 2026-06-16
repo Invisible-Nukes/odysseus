@@ -11,10 +11,11 @@ param()
 $ErrorActionPreference = "Stop"
 $scriptRoot = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent
 
-# Resolve data dir
+# Resolve data dir. Prefer the caller-provided ODYSSEUS_DATA_DIR; otherwise
+# default to the repo-local data tree so Ollama lands under this checkout.
 $dataDir = $env:ODYSSEUS_DATA_DIR
 if (-not $dataDir) { $dataDir = Join-Path $scriptRoot "..\data" | Resolve-Path -ErrorAction SilentlyContinue }
-if (-not $dataDir) { $dataDir = Join-Path $scriptRoot "..\data" }
+if (-not $dataDir) { $dataDir = Join-Path $scriptRoot "data" }
 $dataDir = (Resolve-Path $dataDir).ProviderPath
 
 $ollamaDir = Join-Path $dataDir "ollama"

@@ -21,7 +21,10 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
-if (-not $env:ODYSSEUS_DATA_DIR) { $env:ODYSSEUS_DATA_DIR = Join-Path $PSScriptRoot "..\data" }
+# Keep all persistent data under the repo-managed data tree by default so
+# Ollama, model caches, and app state live with this checkout instead of an
+# arbitrary parent directory on the machine.
+if (-not $env:ODYSSEUS_DATA_DIR) { $env:ODYSSEUS_DATA_DIR = Join-Path $PSScriptRoot "data" }
 if (-not $env:HF_HOME) { $env:HF_HOME = Join-Path $env:ODYSSEUS_DATA_DIR "huggingface" }
 if (-not $env:HUGGINGFACE_HUB_CACHE) { $env:HUGGINGFACE_HUB_CACHE = Join-Path $env:HF_HOME "hub" }
 if (-not $env:OLLAMA_HOME) { $env:OLLAMA_HOME = Join-Path $env:ODYSSEUS_DATA_DIR "ollama" }
@@ -190,8 +193,9 @@ if (-not (Test-Path $venvPy)) {
 
 # 3. Install / update dependencies
 Write-Step "Installing dependencies (first run can take a few minutes)"
-# Write full pip output to a timestamped log under the repo data/logs so failures are visible.
-$logsDir = Join-Path $PSScriptRoot "..\data\logs"
+# Write full pip output to a timestamped log under the repo-managed data/logs
+# so failures are visible in the same checkout-local tree.
+$logsDir = Join-Path $PSScriptRoot "data\logs"
 if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
 $ts = (Get-Date).ToString("yyyyMMdd_HHmmss")
 $installLog = Join-Path $logsDir ("pip_install_$ts.log")
