@@ -26,11 +26,12 @@ if (Test-Path $ollamaExe) {
     exit 0
 }
 
-# Default to the official Ollama GitHub release for Windows (v0.30.7) when the
-# operator hasn't specified OLLAMA_DOWNLOAD_URL. The SHA256 below matches the
-# release asset and will be used if OLLAMA_DOWNLOAD_SHA256 is not explicitly set.
-$defaultDownloadUrl = "https://github.com/ollama/ollama/releases/download/v0.30.7/ollama-windows-amd64-mlx.zip"
-$defaultDownloadSha = "06456221a301ae1ecdbdcc1ffe56efe2babe94367b5c8451ffcb7362265d19b8"
+# Default to the official standalone Windows CLI archive for Ollama (v0.30.7)
+# when the operator hasn't specified OLLAMA_DOWNLOAD_URL. This is the base
+# package the Odysseus launcher expects, and the SHA256 below matches the
+# published release asset.
+$defaultDownloadUrl = "https://github.com/ollama/ollama/releases/download/v0.30.7/ollama-windows-amd64.zip"
+$defaultDownloadSha = "ce8169abfe48e05a865958391729ff14f297513ae67fdb4ec7b11a37b9c5b715"
 
 $downloadUrl = $env:OLLAMA_DOWNLOAD_URL
 if (-not $downloadUrl) {
@@ -48,16 +49,31 @@ if (-not $env:OLLAMA_DOWNLOAD_SHA256 -and $defaultDownloadSha) {
 # exists, so repeated runs do not start a fresh download every time.
 $archiveDir = Join-Path $dataDir "downloads"
 New-Item -ItemType Directory -Path $archiveDir -Force | Out-Null
-$cacheFile = Join-Path $archiveDir "ollama-windows-amd64-mlx.zip"
+$cacheFile = Join-Path $archiveDir "ollama-windows-amd64.zip"
 $tempFile = Join-Path $env:TEMP ("ollama_download_{0}.zip" -f ([System.Guid]::NewGuid().ToString()))
 
+# Remove prior Ollama archive artifacts so the next run starts from a clean state.
+Get-ChildItem -Path $archiveDir -Filter "ollama-windows-amd64*.zip" -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
 if (-not (Test-Path $cacheFile)) {
-    Write-Host "Downloading Ollama from $downloadUrl to $cacheFile..."
+    Write-Host "Downloading Ollama from $downloadUrl to $cacheFile via BITS..."
     try {
-        Start-BitsTransfer -Source $downloadUrl -Destination $tempFile -RetryInterval 60 -RetryTimeout 600
+        $bitsJob = Start-BitsTransfer -Source $downloadUrl -Destination $tempFile -Asynchronous -RetryInterval 60 -RetryTimeout 600
+        do {
+            Start-Sleep -Seconds 2
+            $bitsJob = Get-BitsTransfer -JobId $bitsJob.JobId -ErrorAction Stop
+        } while ($bitsJob.JobState -in @('Connecting', 'Transferring', 'Queued'))
+
+        if ($bitsJob.JobState -ne 'Transferred') {
+            throw "BITS transfer finished in state '$($bitsJob.JobState)'."
+        }
+
+        Complete-BitsTransfer -BitsJob $bitsJob -ErrorAction Stop
         Move-Item -Path $tempFile -Destination $cacheFile -Force
     } catch {
         if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
+        if ($bitsJob) { Remove-BitsTransfer -BitsJob $bitsJob -ErrorAction SilentlyContinue }
         Write-Host "BITS download failed: $_" -ForegroundColor Red
         exit 3
     }
