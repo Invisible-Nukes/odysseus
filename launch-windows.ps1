@@ -35,8 +35,25 @@ function Fail($msg) {
     Write-Host ""
     Write-Host ("ERROR: " + $msg) -ForegroundColor Red
     Write-Host ""
-    Read-Host "Press Enter to exit"
-    exit 1
+    throw $msg
+}
+
+function Test-Url($url) {
+    try {
+        $null = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Open-OdysseusBrowser($url) {
+    try {
+        Start-Process $url
+        Write-Host ("Opened Odysseus in your default browser: " + $url) -ForegroundColor Green
+    } catch {
+        Write-Host ("Could not open the browser automatically: " + $_.Exception.Message) -ForegroundColor Yellow
+    }
 }
 
 function Get-OdysseusProcesses {
@@ -293,21 +310,51 @@ Write-Host ("Server log: " + $startupLog) -ForegroundColor Green
 Write-Host "Press Ctrl+C to stop the server when you are done." -ForegroundColor Yellow
 Write-Host ""
 
+$startupUrl = "http://{0}:{1}" -f $BindHost, $Port
+
 try {
-    & $venvPy -m uvicorn app:app --host $BindHost --port $Port *> $startupLog 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $logPath = Save-StartupErrorLog "uvicorn startup" "Uvicorn exited with code $LASTEXITCODE" (Get-Content -Path $startupLog -Raw -ErrorAction SilentlyContinue)
+    $uvicornProcess = Start-Process -FilePath $venvPy -ArgumentList "-m", "uvicorn", "app:app", "--host", $BindHost, "--port", $Port -RedirectStandardOutput $startupLog -RedirectStandardError $startupLog -PassThru -NoNewWindow
+    Write-Host "Starting server in the background..." -ForegroundColor Cyan
+    Write-Host ("Server PID: " + $uvicornProcess.Id) -ForegroundColor DarkGray
+
+    $openTriggered = $false
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-Process -Id $uvicornProcess.Id -ErrorAction SilentlyContinue)) {
+            break
+        }
+        if (Test-Url $startupUrl) {
+            if (-not $openTriggered) {
+                Open-OdysseusBrowser $startupUrl
+                $openTriggered = $true
+            }
+            break
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    if (-not $openTriggered -and (Test-Url $startupUrl)) {
+        Open-OdysseusBrowser $startupUrl
+    }
+
+    if (-not (Get-Process -Id $uvicornProcess.Id -ErrorAction SilentlyContinue)) {
+        $logPath = Save-StartupErrorLog "uvicorn startup" "Uvicorn exited before the app became ready" (Get-Content -Path $startupLog -Raw -ErrorAction SilentlyContinue)
         Write-Host "Server startup failed. See log: $logPath" -ForegroundColor Red
         if (Test-Path $startupLog) {
             Get-Content -Path $startupLog -Tail 100 | ForEach-Object { Write-Host $_ }
         }
-        Read-Host "Press Enter to exit"
-        exit $LASTEXITCODE
+        Write-Host "The launcher will stay open so you can inspect the error output." -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "Odysseus is running. Keep this window open to keep the server alive." -ForegroundColor Green
+    while (Get-Process -Id $uvicornProcess.Id -ErrorAction SilentlyContinue) {
+        Start-Sleep -Seconds 5
     }
 } catch {
     $logPath = Save-StartupErrorLog "uvicorn startup" "Uvicorn threw an exception" $_
     Write-Host "Server startup failed. See log: $logPath" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
-    Read-Host "Press Enter to exit"
-    exit 1
+    Write-Host "The launcher will stay open so you can inspect the error output." -ForegroundColor Yellow
+    return
 }

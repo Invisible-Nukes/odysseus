@@ -11,6 +11,58 @@ param()
 $ErrorActionPreference = "Stop"
 $scriptRoot = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent
 
+function Test-OllamaRuntime {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$OllamaExe
+    )
+
+    Write-Host "Running post-install Ollama verification scan..." -ForegroundColor Cyan
+
+    $versionText = (& $OllamaExe --version 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "Ollama binary failed its version probe: $versionText"
+    }
+    if ($versionText -match '(\d+\.\d+\.\d+(?:\.\d+)?)') {
+        $versionText = $matches[1]
+    }
+
+    $serveProcess = $null
+    try {
+        $serveProcess = Start-Process -FilePath $OllamaExe -ArgumentList "serve" -PassThru -WindowStyle Hidden
+        $deadline = (Get-Date).AddSeconds(30)
+        $apiResponded = $false
+        $apiPayload = $null
+
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 1
+            try {
+                $apiPayload = Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/tags" -Method Get -TimeoutSec 10
+                $apiResponded = $true
+                break
+            } catch {
+                if ($serveProcess.HasExited) {
+                    throw "Ollama server exited before the API probe could complete."
+                }
+            }
+        }
+
+        if (-not $apiResponded) {
+            throw "Ollama server did not answer /api/tags within 30 seconds."
+        }
+
+        return [pscustomobject]@{
+            Version = $versionText
+            ApiModels = @($apiPayload.models)
+            ApiReady = $true
+        }
+    } finally {
+        if ($serveProcess -and -not $serveProcess.HasExited) {
+            Stop-Process -Id $serveProcess.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 # Resolve data dir. Prefer the caller-provided ODYSSEUS_DATA_DIR; otherwise
 # default to the repo-local data tree so Ollama lands under this checkout.
 $dataDir = $env:ODYSSEUS_DATA_DIR
@@ -20,10 +72,10 @@ $dataDir = (Resolve-Path $dataDir).ProviderPath
 
 $ollamaDir = Join-Path $dataDir "ollama"
 $ollamaExe = Join-Path $ollamaDir "ollama.exe"
+$alreadyPresent = Test-Path $ollamaExe
 
-if (Test-Path $ollamaExe) {
-    Write-Host "Ollama already present at: $ollamaExe"
-    exit 0
+if ($alreadyPresent) {
+    Write-Host "Ollama already present at: $ollamaExe" -ForegroundColor Cyan
 }
 
 # Default to the official standalone Windows CLI archive for Ollama (v0.30.7)
@@ -56,7 +108,7 @@ $tempFile = Join-Path $env:TEMP ("ollama_download_{0}.zip" -f ([System.Guid]::Ne
 Get-ChildItem -Path $archiveDir -Filter "ollama-windows-amd64*.zip" -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
-if (-not (Test-Path $cacheFile)) {
+if (-not $alreadyPresent -and -not (Test-Path $cacheFile)) {
     Write-Host "Downloading Ollama from $downloadUrl to $cacheFile via BITS..."
     try {
         $bitsJob = Start-BitsTransfer -Source $downloadUrl -Destination $tempFile -Asynchronous -RetryInterval 60 -RetryTimeout 600
@@ -77,7 +129,7 @@ if (-not (Test-Path $cacheFile)) {
         Write-Host "BITS download failed: $_" -ForegroundColor Red
         exit 3
     }
-} else {
+} elseif (-not $alreadyPresent) {
     Write-Host "Using cached Ollama archive: $cacheFile"
 }
 
@@ -85,7 +137,7 @@ $tempFile = $cacheFile
 
 # Optional checksum verification
 $expectedSha = $env:OLLAMA_DOWNLOAD_SHA256
-if ($expectedSha) {
+if (-not $alreadyPresent -and $expectedSha) {
     if (-not (Test-Path $tempFile)) {
         Write-Host "ERROR: Archive not found at $tempFile for SHA256 verification." -ForegroundColor Red
         exit 5
@@ -112,6 +164,7 @@ if ($expectedSha) {
 }
 
 # Unpack — support ZIP and a single exe installer. If it's an exe, place it in the target dir.
+if (-not $alreadyPresent) {
 try {
     New-Item -ItemType Directory -Path $ollamaDir -Force | Out-Null
     $ext = [IO.Path]::GetExtension($tempFile)
@@ -132,6 +185,7 @@ try {
     if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
     exit 6
 }
+}
 
 # Preserve the cached archive for future reruns. Only the temporary download
 # file is moved into the cache path above; the cached archive itself should
@@ -141,5 +195,25 @@ try {
 $ollamaBin = $ollamaDir
 if (-not ($env:PATH.ToLower().Contains($ollamaBin.ToLower()))) { $env:PATH = "$ollamaBin;$env:PATH" }
 
-Write-Host "Ollama installed to: $ollamaDir"
+Write-Host "Ollama installed to: $ollamaDir" -ForegroundColor Green
+
+try {
+    $verification = Test-OllamaRuntime -OllamaExe $ollamaExe
+    Write-Host "" 
+    Write-Host "Verification scan complete." -ForegroundColor Green
+    Write-Host ("  Binary: " + $ollamaExe) -ForegroundColor White
+    Write-Host ("  Version: " + $verification.Version) -ForegroundColor White
+    Write-Host ("  API reachable at http://127.0.0.1:11434/api/tags") -ForegroundColor White
+    Write-Host ("  Installed models reported by Ollama: " + ($verification.ApiModels.Count)) -ForegroundColor White
+    Write-Host "" 
+    Write-Host "This confirms the local Ollama setup is present and responding." -ForegroundColor Cyan
+} catch {
+    Write-Host "" 
+    Write-Host "Verification scan did not complete cleanly: $($_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host "The binary was installed, but the runtime check failed. Please inspect the terminal output and rerun the setup if needed." -ForegroundColor Yellow
+}
+
+Write-Host "" 
+Write-Host "Press Enter to close this window when you are done." -ForegroundColor Yellow
+Read-Host | Out-Null
 exit 0
