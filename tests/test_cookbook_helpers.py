@@ -245,14 +245,20 @@ def test_pip_install_fallback_chain_prefers_venv_safe_install():
 
 def test_pip_install_fallback_chain_allows_custom_python_command():
     chain = _pip_install_fallback_chain("hf_transfer", python_cmd="pip", upgrade=False)
-    assert "pip install -q hf_transfer" in chain
-    assert "pip install --user -q hf_transfer" in chain
-    assert "pip install --help 2>/dev/null | grep -q -- --break-system-packages" in chain
-    assert "pip install --user --break-system-packages -q hf_transfer" in chain
+    assert "python -m pip install -q hf_transfer" in chain
+    assert "python -m pip install --user -q hf_transfer" in chain
+    assert "python -m pip install --help 2>/dev/null | grep -q -- --break-system-packages" in chain
+    assert "python -m pip install --user --break-system-packages -q hf_transfer" in chain
     # venv check uses the python executable derived from the pip command
     assert 'python -c "import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)"' in chain
     # All install attempts are wrapped in bash -c subshells
     assert chain.count("bash -c '") == 3
+
+
+def test_pip_install_fallback_chain_uses_python_module_form_for_pip_executable():
+    chain = _pip_install_fallback_chain("hf_transfer", python_cmd="pip")
+    assert "python -m pip install -q hf_transfer" in chain
+    assert "python -m pip install --user -q hf_transfer" in chain
 
 
 def test_pip_install_fallback_chain_accepts_python_executable():
@@ -327,6 +333,17 @@ def test_pip_install_fallback_chain_quotes_extras_spec():
     assert "install -q hf_transfer" in plain
 
 
+def test_server_setup_uses_pip_wrapper_for_remote_setup_paths():
+    src = (Path(__file__).resolve().parents[1] / "routes" / "cookbook_routes.py").read_text(encoding="utf-8")
+
+    assert "_pip_install_attempt('python -m pip install -q huggingface-hub')" in src
+    assert "_pip_install_attempt('python -m pip install -q hf_transfer')" in src
+    assert "_pip_install_attempt('python -m pip install -q huggingface-hub hf_transfer')" in src
+    assert "_pip_install_attempt('pip install --no-deps -q huggingface-hub')" in src
+    assert "_pip_install_attempt('pip install -q filelock fsspec packaging pyyaml tqdm typer httpx requests')" in src
+    assert "_pip_install_attempt('python3 -m pip install -q huggingface_hub hf_transfer')" in src
+
+
 def test_serve_runner_installs_llama_cpp_server_extra():
     """The llama.cpp serve auto-install must request the ``[server]`` extra in
     every path (issue #730): a bare ``llama-cpp-python`` passes the
@@ -342,6 +359,17 @@ def test_serve_runner_installs_llama_cpp_server_extra():
     # The [server] extra is requested in the build/fallback paths.
     assert "'llama-cpp-python[server]'" in src
     assert "_pip_install_fallback_chain('llama-cpp-python[server]'" in src
+
+
+def test_serve_runner_uses_wrappers_for_remaining_auto_install_paths():
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "routes" / "cookbook_routes.py").read_text(encoding="utf-8")
+
+    assert "python -m pip install -q llama-cpp-python[server]" in src
+    assert "https://abetlen.github.io/llama-cpp-python/whl/cpu" in src
+    assert '_pip_install_fallback_chain("llama-cpp-python[server]", python_cmd="pip")' in src
+    assert "pip install numpy diskcache jinja2 2>/dev/null" not in src
 
 
 def test_serve_pip_install_normalizes_llama_cpp_alias_and_adds_wheel_index():
@@ -388,15 +416,20 @@ def test_pip_install_runner_guards_break_system_packages():
 
     assert "python3 -m pip install --help 2>/dev/null | grep -q -- --break-system-packages" in script
     assert 'python3 -m pip install --no-cache-dir --user --break-system-packages "llama-cpp-python[server]"' in script
-    assert "python3 -m pip install --no-cache-dir --user 'llama-cpp-python[server]'" in script
+    assert "'\"'\"'llama-cpp-python[server]'\"'\"'" in script
     assert "pip does not support --break-system-packages" in script
+    assert "mkdir -p \"${DATA_DIR:-./data}/logs\"" in script
+    assert "exit $_rc" in script
 
 
-def test_pip_install_runner_leaves_plain_commands_unchanged():
+def test_pip_install_runner_wraps_plain_commands_in_status_preserving_subshell():
     lines = []
     _append_pip_install_runner_lines(lines, "python3 -m pip install --no-cache-dir vllm")
 
-    assert lines == ["python3 -m pip install --no-cache-dir vllm"]
+    assert len(lines) == 1
+    assert lines[0].startswith("bash -c '")
+    assert "python3 -m pip install --no-cache-dir vllm" in lines[0]
+    assert "exit $_rc" in lines[0]
 
 
 def test_pip_install_attempt_wraps_in_status_preserving_subshell():
@@ -405,6 +438,15 @@ def test_pip_install_attempt_wraps_in_status_preserving_subshell():
     snippet = _pip_install_attempt("pip install -q huggingface_hub")
     assert snippet.startswith("bash -c '")
     assert "$(mktemp)" in snippet
+
+
+def test_pip_install_attempt_uses_single_quoted_wrapper_for_quoted_package_specs():
+    """Quoted package specs must keep shell expansions inside the inner bash
+    script instead of being evaluated by the outer wrapper."""
+    snippet = _pip_install_attempt("python3 -m pip install 'llama-cpp-python[server]'")
+
+    assert snippet.startswith("bash -c '")
+    assert 'bash -c "' not in snippet
     assert "_rc=$?" in snippet
     assert "tail -5" in snippet
     assert "rm -f" in snippet

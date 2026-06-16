@@ -225,19 +225,21 @@ def _pip_install_attempt(pip_cmd: str) -> str:
         'exit $_rc'
     )
 
-    if "'" in script:
-        return 'bash -c "' + script.replace('"', '\\"') + '"'
     return "bash -c '" + script.replace("'", "'\"'\"'") + "'"
 
 
 def _pip_command(python_cmd: str) -> str:
     """Return a pip command for either a pip executable or a Python executable."""
     cmd = python_cmd.strip()
-    if " -m pip" in cmd or cmd in {"pip", "pip3"}:
-        return python_cmd
+    if not cmd:
+        return "python3 -m pip"
+    if " -m pip" in cmd:
+        return cmd
+    if cmd in {"pip", "pip3"}:
+        return "python -m pip" if cmd == "pip" else "python3 -m pip"
     if cmd in {"python", "python3", "python.exe"} or cmd.endswith(("/python", "/python3", "\\python.exe")):
-        return f"{python_cmd} -m pip"
-    return python_cmd
+        return f"{cmd} -m pip"
+    return cmd
 
 
 def _pip_break_system_packages_check(pip_cmd: str) -> str:
@@ -348,27 +350,31 @@ def _pip_install_help_check_from_cmd(cmd: str) -> str | None:
 
 
 def _append_pip_install_runner_lines(runner_lines: list[str], cmd: str) -> None:
-    """Append a pip install command, guarding --break-system-packages support.
+    """Append a pip install command, guarding support and preserving the real exit code.
 
     The Dependencies UI may submit ``python3 -m pip install --user
     --break-system-packages ...`` for non-venv installs. That flag is useful on
     PEP-668-locked distros, but older pip (including Ubuntu 22.04's apt pip in
     the NVIDIA CUDA base image) aborts with "no such option". Branch at runner
     time so stale browser JS and remote targets are handled by the server too.
+    Each branch is run through :func:`_pip_install_attempt` so the runner keeps
+    pip's real status and writes a persistent log for inspection.
     """
-    if "--break-system-packages" not in (cmd or ""):
-        runner_lines.append(cmd)
+    if not cmd:
+        return
+    if "--break-system-packages" not in cmd:
+        runner_lines.append(_pip_install_attempt(cmd))
         return
     help_check = _pip_install_help_check_from_cmd(cmd)
     without_break = _pip_install_command_without_break_system_packages(cmd)
     if not help_check or without_break == cmd:
-        runner_lines.append(cmd)
+        runner_lines.append(_pip_install_attempt(cmd))
         return
     runner_lines.append(f"if {help_check}; then")
-    runner_lines.append(f"  {cmd}")
+    runner_lines.append(f"  {_pip_install_attempt(cmd)}")
     runner_lines.append("else")
     runner_lines.append('  echo "[odysseus] pip does not support --break-system-packages; installing without it."')
-    runner_lines.append(f"  {without_break}")
+    runner_lines.append(f"  {_pip_install_attempt(without_break)}")
     runner_lines.append("fi")
 
 

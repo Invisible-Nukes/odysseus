@@ -44,8 +44,9 @@ from routes.cookbook_helpers import (
     _safe_env_prefix, _local_tooling_path_export, _append_serve_preflight_exit_lines,
     _append_serve_exit_code_lines, _append_llama_cpp_linux_accel_build_lines, _cached_model_scan_script,
     load_stored_hf_token,
-    _append_vllm_linux_preflight_lines, _ollama_bind_from_cmd, _pip_install_fallback_chain,
-    _pip_install_no_cache, _user_shell_path_bootstrap, _venv_safe_local_pip_install_cmd,
+    _append_vllm_linux_preflight_lines, _ollama_bind_from_cmd, _pip_install_attempt,
+    _pip_install_fallback_chain, _pip_install_no_cache, _user_shell_path_bootstrap,
+    _venv_safe_local_pip_install_cmd,
     _diagnose_serve_output, run_ssh_command_async,
     _ollama_bind_from_cmd, _pip_install_fallback_chain, _pip_install_no_cache,
     _user_shell_path_bootstrap, _venv_safe_local_pip_install_cmd,
@@ -561,12 +562,12 @@ def setup_cookbook_routes() -> APIRouter:
                 ps_lines.append('    python -c "import huggingface_hub" 2>$null')
                 ps_lines.append('    if ($LASTEXITCODE -eq 0) {{')
                 ps_lines.append('      Write-Host "hf CLI not found, using Python huggingface_hub..."')
-                ps_lines.append('      python -m pip install -q hf_transfer 2>$null')
+                ps_lines.append(f"      {_pip_install_attempt('python -m pip install -q hf_transfer')}")
                 ps_lines.append('      $env:HF_HUB_ENABLE_HF_TRANSFER = "1"')
                 ps_lines.append(f"      python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download('{req.repo_id}'{_dl_pyarg}, max_workers=8)\"")
                 ps_lines.append('    }} else {{')
                 ps_lines.append('      Write-Host "Installing huggingface-hub..."')
-                ps_lines.append('      python -m pip install -q huggingface-hub hf_transfer')
+                ps_lines.append(f"      {_pip_install_attempt('python -m pip install -q huggingface-hub hf_transfer')}")
                 ps_lines.append('      $env:HF_HUB_ENABLE_HF_TRANSFER = "1"')
                 ps_lines.append(f"      python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download('{req.repo_id}'{_dl_pyarg}, max_workers=8)\"")
                 ps_lines.append('    }}')
@@ -664,12 +665,12 @@ def setup_cookbook_routes() -> APIRouter:
                 runner_lines.append(f'    python3 -c "import os; from huggingface_hub import snapshot_download; snapshot_download(\'{req.repo_id}\'{_dl_pyarg}, max_workers={mw})"')
                 runner_lines.append('  else')
                 runner_lines.append('    echo "Installing huggingface-hub and dependencies..."')
-                runner_lines.append('    pip install --no-deps -q huggingface-hub 2>/dev/null')
+                runner_lines.append(f'    {_pip_install_attempt("python3 -m pip install --no-deps -q huggingface-hub")}')
                 if req.disable_hf_transfer:
-                    runner_lines.append('    pip install -q filelock fsspec packaging pyyaml tqdm typer httpx requests 2>/dev/null')
+                    runner_lines.append(f'    {_pip_install_attempt("python3 -m pip install -q filelock fsspec packaging pyyaml tqdm typer httpx requests")}')
                     runner_lines.append('    export HF_HUB_ENABLE_HF_TRANSFER=0')
                 else:
-                    runner_lines.append('    pip install -q filelock fsspec packaging pyyaml tqdm typer httpx requests hf_transfer 2>/dev/null')
+                    runner_lines.append(f'    {_pip_install_attempt("python3 -m pip install -q filelock fsspec packaging pyyaml tqdm typer httpx requests hf_transfer")}')
                     runner_lines.append("    python3 -c 'import hf_transfer' 2>/dev/null && export HF_HUB_ENABLE_HF_TRANSFER=1")
                 runner_lines.append(f'    python3 -c "import os; from huggingface_hub import snapshot_download; snapshot_download(\'{req.repo_id}\'{_dl_pyarg}, max_workers={mw})"')
                 runner_lines.append('  fi')
@@ -1346,7 +1347,7 @@ def setup_cookbook_routes() -> APIRouter:
                 ps_lines.append('try { python -c "import llama_cpp" 2>$null } catch {}')
                 ps_lines.append('if ($LASTEXITCODE -ne 0) {')
                 ps_lines.append('  Write-Host "Installing llama-cpp-python..."')
-                ps_lines.append('  python -m pip install llama-cpp-python[server]')
+                ps_lines.append(f'  {_pip_install_attempt("python -m pip install -q llama-cpp-python[server] --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu")}')
                 ps_lines.append('}')
             elif "vllm" in req.cmd:
                 ps_lines.append('Write-Host "ERROR: vLLM is not supported on Windows. Use Ollama or llama.cpp instead."')
@@ -1425,8 +1426,8 @@ def setup_cookbook_routes() -> APIRouter:
                 runner_lines.append('  # Termux: no native build — use the Python bindings (CPU).')
                 runner_lines.append('  if ! python3 -c "import llama_cpp" 2>/dev/null; then')
                 runner_lines.append('    pkg install -y cmake 2>/dev/null')
-                runner_lines.append('    pip install numpy diskcache jinja2 2>/dev/null')
-                runner_lines.append('    CMAKE_ARGS="-DGGML_BLAS=OFF -DGGML_LLAMAFILE=OFF" pip install \'llama-cpp-python[server]\' --no-build-isolation --no-cache-dir 2>&1 || true')
+                runner_lines.append(f'    {_pip_install_attempt("pip install -q numpy diskcache jinja2")}')
+                runner_lines.append(f'    CMAKE_ARGS="-DGGML_BLAS=OFF -DGGML_LLAMAFILE=OFF" {_pip_install_fallback_chain("llama-cpp-python[server]", python_cmd="pip")} || true')
                 runner_lines.append('  fi')
                 runner_lines.append('elif ! command -v llama-server &>/dev/null; then')
                 runner_lines.append('  echo "Native llama-server not found — building from source (one-time, may take a few minutes)..."')
@@ -1554,7 +1555,10 @@ def setup_cookbook_routes() -> APIRouter:
                     runner_lines,
                     keep_shell_open=not local_windows,
                 )
-                runner_lines.append(req.cmd)
+                if is_pip_install:
+                    _append_pip_install_runner_lines(runner_lines, req.cmd)
+                else:
+                    runner_lines.append(req.cmd)
                 if local_windows:
                     # Detached background process — no interactive shell to keep open.
                     # Print the exit marker the status poller looks for, then stop.
@@ -1719,7 +1723,7 @@ def setup_cookbook_routes() -> APIRouter:
                 'powershell -Command "'
                 "New-Item -ItemType Directory -Force -Path $env:TEMP\\odysseus-sessions | Out-Null; "
                 "try { python --version } catch { Write-Host 'ERROR: Python not found — install from python.org'; exit 1 }; "
-                "python -m pip install -q huggingface-hub 2>$null; "
+                f"{_pip_install_attempt('python -m pip install -q huggingface-hub')} ; "
                 "python -c \\\"from huggingface_hub import snapshot_download; print('OK')\\\""
                 '"'
             )
@@ -1727,8 +1731,8 @@ def setup_cookbook_routes() -> APIRouter:
         elif platform == "termux":
             setup_script = (
                 "pkg install -y python tmux 2>/dev/null; "
-                "pip install --no-deps -q huggingface-hub 2>/dev/null; "
-                "pip install -q filelock fsspec packaging pyyaml tqdm typer httpx requests 2>/dev/null; "
+                f"{_pip_install_attempt('pip install --no-deps -q huggingface-hub')}; "
+                f"{_pip_install_attempt('pip install -q filelock fsspec packaging pyyaml tqdm typer httpx requests')}; "
                 "python3 -c 'from huggingface_hub import snapshot_download; print(\"OK\")'"
             )
             cmd = f"ssh {pf}{host} '{setup_script}'"
@@ -1747,10 +1751,11 @@ def setup_cookbook_routes() -> APIRouter:
                 "  fi; "
                 "fi; "
                 "command -v tmux >/dev/null 2>&1 || echo 'WARNING: tmux missing and auto-install failed (need passwordless sudo). Install manually.'; "
-                # Install Python bits. Try system install first; fall back to --user --break-system-packages on PEP 668 systems.
-                "pip install -q huggingface_hub hf_transfer 2>/dev/null || "
-                "pip install --user --break-system-packages -q huggingface_hub hf_transfer 2>/dev/null || "
-                "pip3 install --user --break-system-packages -q huggingface_hub hf_transfer 2>/dev/null; "
+                # Install Python bits with the same status-preserving wrapper used for dependency installs.
+                "python3 -c 'import huggingface_hub' 2>/dev/null || "
+                f"{_pip_install_attempt('python3 -m pip install -q huggingface_hub hf_transfer')} || "
+                f"{_pip_install_attempt('python3 -m pip install --user --break-system-packages -q huggingface_hub hf_transfer')} || "
+                f"{_pip_install_attempt('pip3 install --user --break-system-packages -q huggingface_hub hf_transfer')}; "
                 "python3 -c 'from huggingface_hub import snapshot_download; print(\"OK\")'"
             )
             cmd = f"ssh {pf}{host} '{setup_script}'"
