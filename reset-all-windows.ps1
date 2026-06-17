@@ -41,11 +41,18 @@ foreach ($name in $processNames) {
     Get-CimInstance Win32_Process -Filter "name = '$name'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -match 'odysseus|app.py|launch-windows.ps1|uvicorn' } |
         ForEach-Object {
-            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; Write-Host "Stopped $($_.ProcessId) $($_.Name)" } catch {}
+            try { 
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
+                Write-Host "Stopped $($_.ProcessId) $($_.Name)" -ForegroundColor Yellow
+            } catch {
+                Write-Host "Could not stop $($_.ProcessId): $_" -ForegroundColor DarkYellow
+            }
         }
 }
+Start-Sleep -Milliseconds 1000
 
 $pathsToDelete = @(
+    (Join-Path $repoRoot '.venv'),
     (Join-Path $repoRoot 'venv'),
     $effectiveDataDir,
     (Join-Path $repoRoot '.env'),
@@ -73,8 +80,15 @@ foreach ($path in $runtimeStateFiles) {
 
 foreach ($path in $pathsToDelete) {
     if (Test-Path $path) {
-        Write-Host "Removing $path"
-        Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "Removing $path" -ForegroundColor DarkGray
+        try {
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+            Write-Host "  [ok] Removed" -ForegroundColor Green
+        } catch {
+            Write-Host "  [error] Failed to remove: $_" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "Not found: $path" -ForegroundColor DarkGray
     }
 }
 
@@ -115,8 +129,18 @@ foreach ($cacheRoot in $cacheRoots) {
 }
 
 Write-Step "Recreating clean directories"
-New-Item -ItemType Directory -Path (Join-Path $effectiveDataDir 'logs') -Force | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $effectiveDataDir 'downloads') -Force | Out-Null
+try {
+    New-Item -ItemType Directory -Path (Join-Path $effectiveDataDir 'logs') -Force | Out-Null
+    Write-Host "Created logs directory" -ForegroundColor Green
+} catch {
+    Write-Host "Failed to create logs directory: $_" -ForegroundColor Yellow
+}
+try {
+    New-Item -ItemType Directory -Path (Join-Path $effectiveDataDir 'downloads') -Force | Out-Null
+    Write-Host "Created downloads directory" -ForegroundColor Green
+} catch {
+    Write-Host "Failed to create downloads directory: $_" -ForegroundColor Yellow
+}
 
-Write-Host "" 
+Write-Host ""
 Write-Host "Reset complete. Re-run launch-windows.ps1 to rebuild from a fresh checkout state." -ForegroundColor Green

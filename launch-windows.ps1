@@ -323,15 +323,17 @@ Write-Host $pythonLabel
 
 # 2. Create the virtualenv if missing
 $venvPy = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
-if (-not (Test-Path $venvPy)) {
+$altVenvPy = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
+if (Test-Path $venvPy) {
+    Write-Host "venv already exists - skipping creation."
+} elseif (Test-Path $altVenvPy) {
+    Write-Host ".venv already exists - using it."
+    $venvPy = $altVenvPy
+} else {
     Write-Step "Creating virtual environment (venv)"
     & $pyExe @pyArgs -m venv venv
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPy)) { Fail "Failed to create the virtual environment." }
-} else {
-    Write-Host "venv already exists - skipping creation."
 }
-
-# 3. Install / update dependencies
 Write-Step "Installing dependencies (first run can take a few minutes)"
 # Write full pip output to a timestamped log under the repo-managed data/logs
 # so failures are visible in the same checkout-local tree.
