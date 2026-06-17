@@ -83,27 +83,50 @@ function Show-LogTail($logPath, $label, $tailLines = 40) {
     }
 }
 
-function Invoke-LoggedCommand($filePath, $argumentList, $logPath, $label) {
+function Invoke-PipWithRetry($venvPy, $argumentList, $logPath, $label, $maxRetries = 3) {
     $logDir = Split-Path -Path $logPath -Parent
     if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
-    if (Test-Path $logPath) { Remove-Item -Path $logPath -Force -ErrorAction SilentlyContinue }
 
-    Write-Host ("[progress] Running {0}..." -f $label) -ForegroundColor Cyan
-    Write-Host ("[progress] Log file: {0}" -f $logPath) -ForegroundColor DarkGray
+    $retryCount = 0
+    while ($retryCount -lt $maxRetries) {
+        if (Test-Path $logPath) { Remove-Item -Path $logPath -Force -ErrorAction SilentlyContinue }
 
-    $exitCode = 0
-    & $filePath @argumentList 2>&1 |
-        Tee-Object -FilePath $logPath |
-        ForEach-Object {
-            Write-Host ("    {0}" -f $_) -ForegroundColor DarkGray
-            if ($_ -match 'error|failed|fatal|Traceback') { Write-Host ("    [warn] {0}" -f $_) -ForegroundColor Yellow }
+        Write-Host ("[progress] Running {0}..." -f $label) -ForegroundColor Cyan
+        if ($retryCount -gt 0) {
+            Write-Host ("[progress] Retry {0}/{1}" -f $retryCount, ($maxRetries - 1)) -ForegroundColor Yellow
         }
-    $exitCode = $LASTEXITCODE
+        Write-Host ("[progress] Log file: {0}" -f $logPath) -ForegroundColor DarkGray
 
-    if ($exitCode -ne 0) {
-        throw ("{0} failed with exit code {1}. See {2}" -f $label, $exitCode, $logPath)
+        & $venvPy @argumentList 2>&1 |
+            Tee-Object -FilePath $logPath |
+            ForEach-Object {
+                Write-Host ("    {0}" -f $_) -ForegroundColor DarkGray
+                if ($_ -match 'error|failed|fatal|Traceback') { Write-Host ("    [warn] {0}" -f $_) -ForegroundColor Yellow }
+            }
+        $exitCode = $LASTEXITCODE
+
+        if ($exitCode -eq 0) {
+            return $true
+        }
+
+        # Check if error is transient (HTTP 5xx, connection errors, etc.)
+        $logContent = Get-Content -Path $logPath -Raw -ErrorAction SilentlyContinue
+        if ($logContent -match "HTTP (50[0-9]|connection|timeout|reset by peer)" -or $exitCode -eq 1) {
+            $retryCount++
+            if ($retryCount -lt $maxRetries) {
+                $waitTime = [Math]::Min([Math]::Pow(2, $retryCount), 30)  # exponential backoff, max 30s
+                Write-Host ("[progress] Transient error detected, retrying in {0} seconds..." -f $waitTime) -ForegroundColor Yellow
+                Start-Sleep -Seconds $waitTime
+                continue
+            }
+        }
+
+        # Non-transient error or max retries exceeded
+        return $false
     }
+    return $false
 }
+
 
 function Test-Url($url) {
     try {
@@ -344,7 +367,12 @@ $installLog = Join-Path $logsDir ("pip_install_$ts.log")
 
 Write-Host "Installing Python packages; logging to $installLog"
 try {
-    Invoke-LoggedCommand -filePath $venvPy -argumentList @("-m", "pip", "install", "--upgrade", "pip") -logPath $installLog -label "pip upgrade"
+    $success = Invoke-PipWithRetry -venvPy $venvPy -argumentList @("-m", "pip", "install", "--upgrade", "pip") -logPath $installLog -label "pip upgrade"
+    if (-not $success) {
+        Write-Host ("pip upgrade failed after retries. See " + $installLog) -ForegroundColor Red
+        Show-LogTail $installLog "pip upgrade" 100
+        Fail "Dependency install failed during pip upgrade. See the log above."
+    }
 } catch {
     Write-Host ("pip upgrade failed. See " + $installLog) -ForegroundColor Red
     Show-LogTail $installLog "pip upgrade" 100
@@ -352,7 +380,12 @@ try {
 }
 
 try {
-    Invoke-LoggedCommand -filePath $venvPy -argumentList @("-m", "pip", "install", "-r", "requirements.txt") -logPath $installLog -label "pip install -r requirements.txt"
+    $success = Invoke-PipWithRetry -venvPy $venvPy -argumentList @("-m", "pip", "install", "-r", "requirements.txt") -logPath $installLog -label "pip install -r requirements.txt"
+    if (-not $success) {
+        Write-Host ("Dependency install failed after retries. Last 100 lines from " + $installLog + ":") -ForegroundColor Red
+        Show-LogTail $installLog "pip install" 100
+        Fail "Dependency install failed. Inspect $installLog for details."
+    }
 } catch {
     Write-Host ("Dependency install failed. Last 100 lines from " + $installLog + ":") -ForegroundColor Red
     Show-LogTail $installLog "pip install" 100
