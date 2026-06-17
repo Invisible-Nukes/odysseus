@@ -365,7 +365,6 @@ Write-Step "Running first-time setup"
 $setupPy = Join-Path $PSScriptRoot "setup.py"
 $setupLog = Join-Path $logsDir ("setup_{0}.log" -f $ts)
 $env:ODYSSEUS_LAUNCHER_MODE = "1"
-$env:ODYSSEUS_SKIP_ADMIN_PROMPT = "1"
 $env:ODYSSEUS_DATA_DIR = $script:EffectiveDataDir
 try {
     Invoke-LoggedCommand -filePath $venvPy -argumentList @($setupPy) -logPath $setupLog -label "setup.py"

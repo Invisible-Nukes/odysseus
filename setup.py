@@ -109,8 +109,8 @@ def create_default_admin():
             if len(password) < PASSWORD_MIN_LENGTH:
                 print(f"  [error] ODYSSEUS_ADMIN_PASSWORD must be at least {PASSWORD_MIN_LENGTH} characters")
                 return "failed"
-        elif os.getenv("ODYSSEUS_SKIP_ADMIN_PROMPT") or not sys.stdin.isatty() or os.getenv("ODYSSEUS_LAUNCHER_MODE"):
-            # Non-interactive or launcher-driven runs — create a default admin account.
+        elif os.getenv("ODYSSEUS_SKIP_ADMIN_PROMPT") or not sys.stdin.isatty():
+            # Only use defaults if explicitly told to skip or not running in a terminal
             username = username or "admin"
             password = password or __import__("secrets").token_urlsafe(18)
         else:
