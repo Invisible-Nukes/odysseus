@@ -57,6 +57,40 @@ function Save-StartupErrorLog($context, $message, $details) {
     return $logPath
 }
 
+function Show-LogTail($logPath, $label, $tailLines = 40) {
+    if (-not (Test-Path $logPath)) { return }
+
+    $lines = Get-Content -Path $logPath -Tail $tailLines -ErrorAction SilentlyContinue
+    if (-not $lines -or $lines.Count -eq 0) { return }
+
+    Write-Host ("[progress] {0} (latest {1} lines)" -f $label, $lines.Count) -ForegroundColor DarkGray
+    foreach ($line in $lines) {
+        Write-Host ("    {0}" -f $line) -ForegroundColor DarkGray
+    }
+}
+
+function Invoke-LoggedCommand($filePath, $argumentList, $logPath, $label) {
+    $logDir = Split-Path -Path $logPath -Parent
+    if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+    if (Test-Path $logPath) { Remove-Item -Path $logPath -Force -ErrorAction SilentlyContinue }
+
+    Write-Host ("[progress] Running {0}..." -f $label) -ForegroundColor Cyan
+    Write-Host ("[progress] Log file: {0}" -f $logPath) -ForegroundColor DarkGray
+
+    $exitCode = 0
+    & $filePath @argumentList 2>&1 |
+        Tee-Object -FilePath $logPath |
+        ForEach-Object {
+            Write-Host ("    {0}" -f $_) -ForegroundColor DarkGray
+            if ($_ -match 'error|failed|fatal|Traceback') { Write-Host ("    [warn] {0}" -f $_) -ForegroundColor Yellow }
+        }
+    $exitCode = $LASTEXITCODE
+
+    if ($exitCode -ne 0) {
+        throw ("{0} failed with exit code {1}. See {2}" -f $label, $exitCode, $logPath)
+    }
+}
+
 function Test-Url($url) {
     try {
         $null = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
@@ -293,17 +327,19 @@ $ts = (Get-Date).ToString("yyyyMMdd_HHmmss")
 $installLog = Join-Path $logsDir ("pip_install_$ts.log")
 
 Write-Host "Installing Python packages; logging to $installLog"
-& $venvPy -m pip install --upgrade pip > $installLog 2>&1
-if ($LASTEXITCODE -ne 0) {
+try {
+    Invoke-LoggedCommand -filePath $venvPy -argumentList @("-m", "pip", "install", "--upgrade", "pip") -logPath $installLog -label "pip upgrade"
+} catch {
     Write-Host ("pip upgrade failed. See " + $installLog) -ForegroundColor Red
-    Get-Content -Path $installLog -Tail 50 | ForEach-Object { Write-Host $_ }
+    Show-LogTail $installLog "pip upgrade" 100
     Fail "Dependency install failed during pip upgrade. See the log above."
 }
 
-& $venvPy -m pip install -r requirements.txt > $installLog 2>&1
-if ($LASTEXITCODE -ne 0) {
+try {
+    Invoke-LoggedCommand -filePath $venvPy -argumentList @("-m", "pip", "install", "-r", "requirements.txt") -logPath $installLog -label "pip install -r requirements.txt"
+} catch {
     Write-Host ("Dependency install failed. Last 100 lines from " + $installLog + ":") -ForegroundColor Red
-    Get-Content -Path $installLog -Tail 100 | ForEach-Object { Write-Host $_ }
+    Show-LogTail $installLog "pip install" 100
     Fail "Dependency install failed. Inspect $installLog for details."
 }
 Write-Host ("Dependencies installed successfully (log: " + $installLog + ")") -ForegroundColor Green
@@ -311,8 +347,15 @@ Write-Host ("Dependencies installed successfully (log: " + $installLog + ")") -F
 # 4. First-time setup (creates data dirs, DB, .env, admin user)
 Write-Step "Running first-time setup"
 $setupPy = Join-Path $PSScriptRoot "setup.py"
-& $venvPy -c "import os, subprocess; env = dict(os.environ); env['ODYSSEUS_LAUNCHER_MODE'] = '1'; subprocess.run([r'$venvPy', r'$setupPy'], check=True, env=env)"
-if ($LASTEXITCODE -ne 0) { Fail "setup.py failed." }
+$setupLog = Join-Path $logsDir ("setup_{0}.log" -f $ts)
+$setupCommand = @("-c", "import os, subprocess; env = dict(os.environ); env['ODYSSEUS_LAUNCHER_MODE'] = '1'; subprocess.run([r'$venvPy', r'$setupPy'], check=True, env=env)")
+try {
+    Invoke-LoggedCommand -filePath $venvPy -argumentList $setupCommand -logPath $setupLog -label "setup.py"
+} catch {
+    Write-Host "setup.py failed. See log: $setupLog" -ForegroundColor Red
+    Show-LogTail $setupLog "setup.py" 100
+    Fail "setup.py failed."
+}
 
 # 5. Friendly note about Git Bash (full Cookbook / agent-shell parity)
 if (-not (Find-GitBash)) {
@@ -401,6 +444,7 @@ try {
             }
             break
         }
+        Show-LogTail $startupLog "uvicorn startup" 25
         Start-Sleep -Seconds 2
     }
 
