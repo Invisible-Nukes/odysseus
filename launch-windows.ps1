@@ -20,15 +20,21 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
+$script:EffectiveDataDir = $env:ODYSSEUS_DATA_DIR
+if (-not $script:EffectiveDataDir) { $script:EffectiveDataDir = Join-Path $PSScriptRoot "data" }
+if (-not [System.IO.Path]::IsPathRooted($script:EffectiveDataDir)) {
+    $script:EffectiveDataDir = Join-Path $PSScriptRoot $script:EffectiveDataDir
+}
+$script:EffectiveDataDir = [System.IO.Path]::GetFullPath($script:EffectiveDataDir)
 $env:ODYSSEUS_LAUNCHER_MODE = "1"
+$env:ODYSSEUS_DATA_DIR = $script:EffectiveDataDir
 
 # Keep all persistent data under the repo-managed data tree by default so
 # Ollama, model caches, and app state live with this checkout instead of an
 # arbitrary parent directory on the machine.
-if (-not $env:ODYSSEUS_DATA_DIR) { $env:ODYSSEUS_DATA_DIR = Join-Path $PSScriptRoot "data" }
-if (-not $env:HF_HOME) { $env:HF_HOME = Join-Path $env:ODYSSEUS_DATA_DIR "huggingface" }
+if (-not $env:HF_HOME) { $env:HF_HOME = Join-Path $script:EffectiveDataDir "huggingface" }
 if (-not $env:HUGGINGFACE_HUB_CACHE) { $env:HUGGINGFACE_HUB_CACHE = Join-Path $env:HF_HOME "hub" }
-if (-not $env:OLLAMA_HOME) { $env:OLLAMA_HOME = Join-Path $env:ODYSSEUS_DATA_DIR "ollama" }
+if (-not $env:OLLAMA_HOME) { $env:OLLAMA_HOME = Join-Path $script:EffectiveDataDir "ollama" }
 if (-not $env:OLLAMA_BIN) { $env:OLLAMA_BIN = $env:OLLAMA_HOME }
 
 function Write-Step($msg) { Write-Host ""; Write-Host ("==> " + $msg) -ForegroundColor Cyan }
@@ -40,7 +46,7 @@ function Fail($msg) {
 }
 
 function Save-StartupErrorLog($context, $message, $details) {
-    $logsDir = Join-Path $PSScriptRoot "data\logs"
+    $logsDir = Join-Path $script:EffectiveDataDir "logs"
     if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
 
     $ts = (Get-Date).ToString("yyyyMMdd_HHmmss")
@@ -161,11 +167,11 @@ function Stop-OdysseusProcesses {
 
 function Clear-OdysseusRuntimeArtifacts {
     $artifactRoots = @(
-        (Join-Path $PSScriptRoot "data\logs"),
-        (Join-Path $PSScriptRoot "data\cache"),
-        (Join-Path $PSScriptRoot "data\downloads"),
-        (Join-Path $PSScriptRoot "data\generated_images"),
-        (Join-Path $PSScriptRoot "data\tts_cache")
+        (Join-Path $script:EffectiveDataDir "logs"),
+        (Join-Path $script:EffectiveDataDir "cache"),
+        (Join-Path $script:EffectiveDataDir "downloads"),
+        (Join-Path $script:EffectiveDataDir "generated_images"),
+        (Join-Path $script:EffectiveDataDir "tts_cache")
     )
 
     foreach ($root in $artifactRoots) {
@@ -321,7 +327,7 @@ if (-not (Test-Path $venvPy)) {
 Write-Step "Installing dependencies (first run can take a few minutes)"
 # Write full pip output to a timestamped log under the repo-managed data/logs
 # so failures are visible in the same checkout-local tree.
-$logsDir = Join-Path $PSScriptRoot "data\logs"
+$logsDir = Join-Path $script:EffectiveDataDir "logs"
 if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
 $ts = (Get-Date).ToString("yyyyMMdd_HHmmss")
 $installLog = Join-Path $logsDir ("pip_install_$ts.log")
@@ -348,9 +354,11 @@ Write-Host ("Dependencies installed successfully (log: " + $installLog + ")") -F
 Write-Step "Running first-time setup"
 $setupPy = Join-Path $PSScriptRoot "setup.py"
 $setupLog = Join-Path $logsDir ("setup_{0}.log" -f $ts)
-$setupCommand = @("-c", "import os, subprocess; env = dict(os.environ); env['ODYSSEUS_LAUNCHER_MODE'] = '1'; subprocess.run([r'$venvPy', r'$setupPy'], check=True, env=env)")
+$env:ODYSSEUS_LAUNCHER_MODE = "1"
+$env:ODYSSEUS_SKIP_ADMIN_PROMPT = "1"
+$env:ODYSSEUS_DATA_DIR = $script:EffectiveDataDir
 try {
-    Invoke-LoggedCommand -filePath $venvPy -argumentList $setupCommand -logPath $setupLog -label "setup.py"
+    Invoke-LoggedCommand -filePath $venvPy -argumentList @($setupPy) -logPath $setupLog -label "setup.py"
 } catch {
     Write-Host "setup.py failed. See log: $setupLog" -ForegroundColor Red
     Show-LogTail $setupLog "setup.py" 100
@@ -368,8 +376,7 @@ if (-not (Find-GitBash)) {
 
 # 5b. Ensure Ollama headless is available under the Odysseus data tree.
 Write-Step "Checking for Ollama"
-$ollamaData = $env:ODYSSEUS_DATA_DIR
-if (-not $ollamaData) { $ollamaData = Join-Path $PSScriptRoot "data" }
+$ollamaData = $script:EffectiveDataDir
 $ollamaDir = Join-Path $ollamaData "ollama"
 $ollamaExe = Join-Path $ollamaDir "ollama.exe"
 
@@ -413,7 +420,7 @@ if (Test-Path $cudaBase) {
 
 # 7. Start the server (use `python -m uvicorn` - bare `uvicorn` may not be on PATH)
 Write-Step ("Starting Odysseus at http://{0}:{1}" -f $BindHost, $Port)
-$logsDir = Join-Path $PSScriptRoot "data\logs"
+$logsDir = Join-Path $script:EffectiveDataDir "logs"
 if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
 $timestamp = (Get-Date).ToString("yyyyMMdd_HHmmss")
 $startupLog = Join-Path $logsDir ("uvicorn_{0}.log" -f $timestamp)

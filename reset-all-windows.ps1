@@ -19,6 +19,13 @@ function Fail([string]$Message) {
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $repoRoot
 
+$effectiveDataDir = $env:ODYSSEUS_DATA_DIR
+if (-not $effectiveDataDir) { $effectiveDataDir = Join-Path $repoRoot 'data' }
+if (-not [System.IO.Path]::IsPathRooted($effectiveDataDir)) {
+    $effectiveDataDir = Join-Path $repoRoot $effectiveDataDir
+}
+$effectiveDataDir = [System.IO.Path]::GetFullPath($effectiveDataDir)
+
 Write-Step "This will remove local runtime state and rebuild from a clean checkout"
 if (-not $Force) {
     $response = Read-Host "Type 'RESET' to confirm"
@@ -40,7 +47,7 @@ foreach ($name in $processNames) {
 
 $pathsToDelete = @(
     (Join-Path $repoRoot 'venv'),
-    (Join-Path $repoRoot 'data'),
+    $effectiveDataDir,
     (Join-Path $repoRoot '.env'),
     (Join-Path $repoRoot 'auth.json'),
     (Join-Path $repoRoot 'app.db'),
@@ -48,7 +55,7 @@ $pathsToDelete = @(
     (Join-Path $repoRoot '.pytest_cache'),
     (Join-Path $repoRoot '.mypy_cache'),
     (Join-Path $repoRoot '.ruff_cache')
-)
+) | Select-Object -Unique
 
 foreach ($path in $pathsToDelete) {
     if (Test-Path $path) {
@@ -69,9 +76,9 @@ foreach ($subdir in $subdirs) {
 }
 
 Write-Step "Removing downloaded Ollama assets"
-$ollamaDownloadDir = Join-Path $repoRoot 'data\downloads'
+$ollamaDownloadDir = Join-Path $effectiveDataDir 'downloads'
 if (Test-Path $ollamaDownloadDir) { Remove-Item -LiteralPath $ollamaDownloadDir -Recurse -Force -ErrorAction SilentlyContinue }
-$ollamaDir = Join-Path $repoRoot 'data\ollama'
+$ollamaDir = Join-Path $effectiveDataDir 'ollama'
 if (Test-Path $ollamaDir) { Remove-Item -LiteralPath $ollamaDir -Recurse -Force -ErrorAction SilentlyContinue }
 
 Write-Step "Removing pip caches and temporary files"
@@ -81,7 +88,9 @@ $cacheRoots = @(
     (Join-Path $env:APPDATA 'pip'),
     (Join-Path $env:USERPROFILE '.cache'),
     (Join-Path $env:USERPROFILE 'AppData\Local\pip'),
-    (Join-Path $env:USERPROFILE 'AppData\Roaming\pip')
+    (Join-Path $env:USERPROFILE 'AppData\Roaming\pip'),
+    (Join-Path $env:LOCALAPPDATA 'odysseus'),
+    (Join-Path $env:APPDATA 'odysseus')
 )
 foreach ($cacheRoot in $cacheRoots) {
     if (Test-Path $cacheRoot) {
@@ -92,8 +101,8 @@ foreach ($cacheRoot in $cacheRoots) {
 }
 
 Write-Step "Recreating clean directories"
-New-Item -ItemType Directory -Path (Join-Path $repoRoot 'data\logs') -Force | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $repoRoot 'data\downloads') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $effectiveDataDir 'logs') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $effectiveDataDir 'downloads') -Force | Out-Null
 
 Write-Host "" 
 Write-Host "Reset complete. Re-run launch-windows.ps1 to rebuild from a fresh checkout state." -ForegroundColor Green

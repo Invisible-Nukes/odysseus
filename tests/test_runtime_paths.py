@@ -2,7 +2,7 @@ import os
 import sys
 from unittest import mock
 import pytest
-from src.runtime_paths import get_app_root, get_default_data_dir
+from src.runtime_paths import get_app_root, get_default_data_dir, resolve_data_dir
 
 
 def test_get_app_root_normal_run():
@@ -48,3 +48,10 @@ def test_get_default_data_dir_frozen():
         res = get_default_data_dir()
         expected = os.path.join(os.path.expanduser("~"), ".odysseus", "data")
         assert res == expected
+
+
+def test_resolve_data_dir_uses_app_root_for_relative_override():
+    """A relative ODYSSEUS_DATA_DIR override should resolve under the app root."""
+    with mock.patch.dict(os.environ, {"ODYSSEUS_DATA_DIR": "custom-data"}, clear=False), \
+         mock.patch.object(sys, "frozen", False, create=True):
+        assert resolve_data_dir() == os.path.join(get_app_root(), "custom-data")

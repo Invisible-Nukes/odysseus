@@ -28,3 +28,18 @@ def get_default_data_dir() -> str:
     if getattr(sys, "frozen", False):
         return os.path.join(os.path.expanduser("~"), ".odysseus", "data")
     return os.path.join(get_app_root(), "data")
+
+
+def resolve_data_dir() -> str:
+    """Return the effective path for persistent runtime state.
+
+    The launcher, setup, and reset scripts all rely on this contract so they
+    resolve the same data directory even when ODYSSEUS_DATA_DIR is set to a
+    relative path.
+    """
+    override = os.getenv("ODYSSEUS_DATA_DIR")
+    if override is not None and override.strip():
+        if os.path.isabs(override):
+            return os.path.abspath(os.path.normpath(override))
+        return os.path.abspath(os.path.normpath(os.path.join(get_app_root(), override)))
+    return get_default_data_dir()
