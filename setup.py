@@ -56,30 +56,29 @@ def _prompt_admin_credentials():
     import getpass
 
     print()
-    print("  Set up your admin account:")
-    print("  (Press Enter to accept defaults)")
+    print("Set up your admin account (Press Enter to accept defaults):")
     print()
 
     while True:
-        username = input("  Username [admin]: ").strip().lower()
+        username = input("[Username]: ").strip().lower()
         if not username:
             username = "admin"
         if username in RESERVED_USERNAMES:
-            print(f"  '{username}' is a reserved username. Choose another.")
+            print(f"  Error: '{username}' is a reserved username. Choose another.")
             continue
         break
 
     while True:
-        password = getpass.getpass("  Password: ")
+        password = getpass.getpass("[Password]: ")
         if not password:
-            print("  Password cannot be empty.")
+            print("  Error: Password cannot be empty.")
             continue
         if len(password) < PASSWORD_MIN_LENGTH:
-            print(f"  Password must be at least {PASSWORD_MIN_LENGTH} characters.")
+            print(f"  Error: Password must be at least {PASSWORD_MIN_LENGTH} characters.")
             continue
-        confirm = getpass.getpass("  Confirm password: ")
+        confirm = getpass.getpass("[Confirm Password]: ")
         if password != confirm:
-            print("  Passwords don't match. Try again.")
+            print("  Error: Passwords don't match. Try again.")
             continue
         break
 
