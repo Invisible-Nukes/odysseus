@@ -38,10 +38,18 @@ if (-not $env:OLLAMA_HOME) { $env:OLLAMA_HOME = Join-Path $script:EffectiveDataD
 if (-not $env:OLLAMA_BIN) { $env:OLLAMA_BIN = $env:OLLAMA_HOME }
 
 function Write-Step($msg) { Write-Host ""; Write-Host ("==> " + $msg) -ForegroundColor Cyan }
+function Wait-For-LauncherExit($message) {
+    Write-Host ""
+    if ($message) { Write-Host $message -ForegroundColor Yellow }
+    Write-Host "Press Enter to close this window." -ForegroundColor Yellow
+    try { Read-Host | Out-Null } catch {}
+}
+
 function Fail($msg) {
     Write-Host ""
     Write-Host ("ERROR: " + $msg) -ForegroundColor Red
     Write-Host ""
+    Wait-For-LauncherExit "The launcher stopped because an error occurred."
     throw $msg
 }
 
@@ -467,7 +475,7 @@ try {
                 Get-Content -Path $logFile -Tail 100 | ForEach-Object { Write-Host $_ }
             }
         }
-        Write-Host "The launcher will stay open so you can inspect the error output." -ForegroundColor Yellow
+        Wait-For-LauncherExit "The launcher will stay open so you can inspect the error output."
         return
     }
 
@@ -475,10 +483,11 @@ try {
     while (Get-Process -Id $uvicornProcess.Id -ErrorAction SilentlyContinue) {
         Start-Sleep -Seconds 5
     }
+    Wait-For-LauncherExit "Odysseus has stopped."
 } catch {
     $logPath = Save-StartupErrorLog "uvicorn startup" "Uvicorn threw an exception" $_
     Write-Host "Server startup failed. See log: $logPath" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
-    Write-Host "The launcher will stay open so you can inspect the error output." -ForegroundColor Yellow
+    Wait-For-LauncherExit "The launcher will stay open so you can inspect the error output."
     return
 }

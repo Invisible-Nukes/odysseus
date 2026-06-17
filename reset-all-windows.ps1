@@ -57,6 +57,20 @@ $pathsToDelete = @(
     (Join-Path $repoRoot '.ruff_cache')
 ) | Select-Object -Unique
 
+$runtimeStateFiles = @(
+    (Join-Path $effectiveDataDir 'auth.json'),
+    (Join-Path $effectiveDataDir 'app.db'),
+    (Join-Path $effectiveDataDir 'sessions.json'),
+    (Join-Path $effectiveDataDir 'memory.json'),
+    (Join-Path $effectiveDataDir 'settings.json')
+) | Select-Object -Unique
+foreach ($path in $runtimeStateFiles) {
+    if (Test-Path $path) {
+        Write-Host "Removing $path"
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+}
+
 foreach ($path in $pathsToDelete) {
     if (Test-Path $path) {
         Write-Host "Removing $path"
