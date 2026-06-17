@@ -1,0 +1,99 @@
+#Requires -Version 5.1
+
+param(
+    [switch]$Force
+)
+
+$ErrorActionPreference = 'Stop'
+
+function Write-Step([string]$Message) {
+    Write-Host "" 
+    Write-Host "==> $Message" -ForegroundColor Cyan
+}
+
+function Fail([string]$Message) {
+    Write-Host "ERROR: $Message" -ForegroundColor Red
+    throw $Message
+}
+
+$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $repoRoot
+
+Write-Step "This will remove local runtime state and rebuild from a clean checkout"
+if (-not $Force) {
+    $response = Read-Host "Type 'RESET' to confirm"
+    if ($response -ne 'RESET') {
+        Write-Host "Aborted. No files were deleted." -ForegroundColor Yellow
+        return
+    }
+}
+
+Write-Step "Stopping Odysseus-related processes"
+$processNames = @('python', 'python.exe', 'uvicorn', 'uvicorn.exe', 'powershell', 'pwsh')
+foreach ($name in $processNames) {
+    Get-CimInstance Win32_Process -Filter "name = '$name'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match 'odysseus|app.py|launch-windows.ps1|uvicorn' } |
+        ForEach-Object {
+            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; Write-Host "Stopped $($_.ProcessId) $($_.Name)" } catch {}
+        }
+}
+
+$pathsToDelete = @(
+    (Join-Path $repoRoot 'venv'),
+    (Join-Path $repoRoot 'data'),
+    (Join-Path $repoRoot '.env'),
+    (Join-Path $repoRoot 'auth.json'),
+    (Join-Path $repoRoot 'app.db'),
+    (Join-Path $repoRoot '__pycache__'),
+    (Join-Path $repoRoot '.pytest_cache'),
+    (Join-Path $repoRoot '.mypy_cache'),
+    (Join-Path $repoRoot '.ruff_cache')
+)
+
+foreach ($path in $pathsToDelete) {
+    if (Test-Path $path) {
+        Write-Host "Removing $path"
+        Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$subdirs = @(
+    'core', 'routes', 'scripts', 'services', 'tests', 'src', 'mcp_servers'
+)
+foreach ($subdir in $subdirs) {
+    $cachePath = Join-Path $repoRoot $subdir
+    if (Test-Path $cachePath) {
+        Get-ChildItem -LiteralPath $cachePath -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Write-Step "Removing downloaded Ollama assets"
+$ollamaDownloadDir = Join-Path $repoRoot 'data\downloads'
+if (Test-Path $ollamaDownloadDir) { Remove-Item -LiteralPath $ollamaDownloadDir -Recurse -Force -ErrorAction SilentlyContinue }
+$ollamaDir = Join-Path $repoRoot 'data\ollama'
+if (Test-Path $ollamaDir) { Remove-Item -LiteralPath $ollamaDir -Recurse -Force -ErrorAction SilentlyContinue }
+
+Write-Step "Removing pip caches and temporary files"
+$cacheRoots = @(
+    $env:TEMP,
+    (Join-Path $env:LOCALAPPDATA 'pip'),
+    (Join-Path $env:APPDATA 'pip'),
+    (Join-Path $env:USERPROFILE '.cache'),
+    (Join-Path $env:USERPROFILE 'AppData\Local\pip'),
+    (Join-Path $env:USERPROFILE 'AppData\Roaming\pip')
+)
+foreach ($cacheRoot in $cacheRoots) {
+    if (Test-Path $cacheRoot) {
+        Get-ChildItem -LiteralPath $cacheRoot -Recurse -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'odysseus|pip|cache' } |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Write-Step "Recreating clean directories"
+New-Item -ItemType Directory -Path (Join-Path $repoRoot 'data\logs') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $repoRoot 'data\downloads') -Force | Out-Null
+
+Write-Host "" 
+Write-Host "Reset complete. Re-run launch-windows.ps1 to rebuild from a fresh checkout state." -ForegroundColor Green
