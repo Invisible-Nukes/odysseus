@@ -60,3 +60,13 @@ def test_open_browser():
         with mock.patch("launcher.splash_root", mock_splash):
             open_browser("http://127.0.0.1:7000")
             mock_splash.after.assert_called_once()
+
+
+def test_open_browser_falls_back_to_open_new_tab():
+    with mock.patch("webbrowser.open", return_value=False) as mock_open, \
+         mock.patch("webbrowser.open_new_tab", return_value=True) as mock_open_new_tab, \
+         mock.patch("time.sleep"):
+        with mock.patch("launcher.splash_root", None):
+            assert open_browser("http://127.0.0.1:7000") is True
+            mock_open.assert_called_once_with("http://127.0.0.1:7000")
+            mock_open_new_tab.assert_called_once_with("http://127.0.0.1:7000")

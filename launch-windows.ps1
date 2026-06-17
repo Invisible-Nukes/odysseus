@@ -20,6 +20,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
+$env:ODYSSEUS_LAUNCHER_MODE = "1"
 
 # Keep all persistent data under the repo-managed data tree by default so
 # Ollama, model caches, and app state live with this checkout instead of an
@@ -66,12 +67,23 @@ function Test-Url($url) {
 }
 
 function Open-OdysseusBrowser($url) {
-    try {
-        Start-Process $url
-        Write-Host ("Opened Odysseus in your default browser: " + $url) -ForegroundColor Green
-    } catch {
-        Write-Host ("Could not open the browser automatically: " + $_.Exception.Message) -ForegroundColor Yellow
+    $attempts = @(
+        { Start-Process -FilePath $url -ErrorAction Stop },
+        { Start-Process -FilePath "explorer.exe" -ArgumentList $url -ErrorAction Stop }
+    )
+
+    foreach ($attempt in $attempts) {
+        try {
+            & $attempt
+            Write-Host ("Opened Odysseus in your default browser: " + $url) -ForegroundColor Green
+            return $true
+        } catch {
+            Write-Host ("Browser open attempt failed: " + $_.Exception.Message) -ForegroundColor DarkYellow
+        }
     }
+
+    Write-Host ("Could not open the browser automatically. Please open this URL manually: " + $url) -ForegroundColor Yellow
+    return $false
 }
 
 function Get-OdysseusProcesses {
@@ -298,7 +310,8 @@ Write-Host ("Dependencies installed successfully (log: " + $installLog + ")") -F
 
 # 4. First-time setup (creates data dirs, DB, .env, admin user)
 Write-Step "Running first-time setup"
-& $venvPy setup.py
+$setupPy = Join-Path $PSScriptRoot "setup.py"
+& $venvPy -c "import os, subprocess; env = dict(os.environ); env['ODYSSEUS_LAUNCHER_MODE'] = '1'; subprocess.run([r'$venvPy', r'$setupPy'], check=True, env=env)"
 if ($LASTEXITCODE -ne 0) { Fail "setup.py failed." }
 
 # 5. Friendly note about Git Bash (full Cookbook / agent-shell parity)

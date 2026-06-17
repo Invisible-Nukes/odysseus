@@ -97,7 +97,7 @@ def create_default_admin():
         import bcrypt
         import json
 
-        # Priority: env vars > interactive prompt > random password
+        # Priority: env vars > non-interactive defaults > interactive prompt
         username = os.getenv("ODYSSEUS_ADMIN_USER", "").strip().lower()
         password = os.getenv("ODYSSEUS_ADMIN_PASSWORD", "").strip()
 
@@ -109,13 +109,13 @@ def create_default_admin():
             if len(password) < PASSWORD_MIN_LENGTH:
                 print(f"  [error] ODYSSEUS_ADMIN_PASSWORD must be at least {PASSWORD_MIN_LENGTH} characters")
                 return "failed"
-        elif sys.stdin.isatty() and not os.getenv("ODYSSEUS_SKIP_ADMIN_PROMPT"):
-            # Interactive terminal — ask the user
-            username, password = _prompt_admin_credentials()
-        else:
-            # Non-interactive (Docker, CI) — fall back to generated password
+        elif os.getenv("ODYSSEUS_SKIP_ADMIN_PROMPT") or not sys.stdin.isatty() or os.getenv("ODYSSEUS_LAUNCHER_MODE"):
+            # Non-interactive or launcher-driven runs — create a default admin account.
             username = username or "admin"
             password = password or __import__("secrets").token_urlsafe(18)
+        else:
+            # Interactive terminal — ask the user
+            username, password = _prompt_admin_credentials()
 
         username = username or "admin"
         hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()

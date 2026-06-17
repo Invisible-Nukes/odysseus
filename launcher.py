@@ -121,7 +121,16 @@ def open_browser(url):
     except Exception:
         pass
 
-    webbrowser.open(url)
+    try:
+        opened = webbrowser.open(url)
+        if not opened:
+            return webbrowser.open_new_tab(url)
+        return opened
+    except Exception:
+        try:
+            return webbrowser.open_new_tab(url)
+        except Exception:
+            return False
 
 
 if __name__ == "__main__":
