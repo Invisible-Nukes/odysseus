@@ -366,8 +366,14 @@ $setupPy = Join-Path $PSScriptRoot "setup.py"
 $setupLog = Join-Path $logsDir ("setup_{0}.log" -f $ts)
 $env:ODYSSEUS_LAUNCHER_MODE = "1"
 $env:ODYSSEUS_DATA_DIR = $script:EffectiveDataDir
+Write-Host ("[progress] Running setup.py...") -ForegroundColor Cyan
+Write-Host ("[progress] Log file: {0}" -f $setupLog) -ForegroundColor DarkGray
 try {
-    Invoke-LoggedCommand -filePath $venvPy -argumentList @($setupPy) -logPath $setupLog -label "setup.py"
+    # Run setup.py interactively (not through Tee-Object) to allow stdin for credential prompts
+    & $venvPy $setupPy 2>&1 | Tee-Object -FilePath $setupLog
+    if ($LASTEXITCODE -ne 0) {
+        throw ("setup.py failed with exit code {0}. See {1}" -f $LASTEXITCODE, $setupLog)
+    }
 } catch {
     Write-Host "setup.py failed. See log: $setupLog" -ForegroundColor Red
     Show-LogTail $setupLog "setup.py" 100
