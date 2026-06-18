@@ -49,8 +49,30 @@ function Test-Url($url) {
 
 function Open-OdysseusBrowser($url) {
     try {
-        Start-Process $url
-        Write-Host ("Opened Odysseus in your default browser: " + $url) -ForegroundColor Green
+        # Try to open in existing Chrome window first
+        $chromePaths = @(
+            (Join-Path $env:ProgramFiles "Google\Chrome\Application\chrome.exe"),
+            (Join-Path ([Environment]::GetEnvironmentVariable('ProgramFiles(x86)')) "Google\Chrome\Application\chrome.exe"),
+            (Join-Path $env:LocalAppData "Google\Chrome\Application\chrome.exe")
+        )
+        
+        $chromeExe = $null
+        foreach ($path in $chromePaths) {
+            if (Test-Path $path) {
+                $chromeExe = $path
+                break
+            }
+        }
+        
+        if ($chromeExe) {
+            # Use --new-window flag to open in a new tab of existing Chrome instance
+            Start-Process -FilePath $chromeExe -ArgumentList $url
+            Write-Host ("Opened Odysseus in Chrome: " + $url) -ForegroundColor Green
+        } else {
+            # Fallback to default browser
+            Start-Process $url
+            Write-Host ("Opened Odysseus in your default browser: " + $url) -ForegroundColor Green
+        }
     } catch {
         Write-Host ("Could not open the browser automatically: " + $_.Exception.Message) -ForegroundColor Yellow
     }
