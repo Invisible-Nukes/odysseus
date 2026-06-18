@@ -52,7 +52,7 @@ function Save-StartupErrorLog($category, $message, $content = "") {
     if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
     
     $timestamp = (Get-Date).ToString("yyyyMMdd_HHmmss")
-    $categoryClean = $category -replace " ", "_"
+    $categoryClean = $category.Replace(' ', '_')
     $logPath = Join-Path $logsDir ("error_{0}_{1}.log" -f $categoryClean, $timestamp)
     
     $logContent = @(

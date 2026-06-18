@@ -7,6 +7,7 @@ import uiModule from './ui.js';
 import spinnerModule from './spinner.js';
 import { providerLogo } from './providers.js';
 import { makeWindowDraggable } from './windowDrag.js';
+import { getPipFlags } from './pip-command-builder.js';
 import { _diagnose, _showDiagnosis, _clearDiagnosis, _runQuickCmd, ERROR_PATTERNS } from './cookbook-diagnosis.js';
 import { RECIPE_BACKENDS, recipesForBackend, pickRecipe, recipeCommands, RECIPE_DEFAULT_VARIANT } from './cookbook-deps-recipes.js';
 import { _hwfitCache, _hwfitDebounce, _hwfitFetch, _hwfitInit, _hwfitRenderList, _hwfitRenderHw, _renderGpuToggles, _expandModelRow, _fitColors, _hwfitColumns, _cachedModelIds, _gpuToggleTotal, _resetGpuToggleState } from './cookbook-hwfit.js';
@@ -938,8 +939,6 @@ async function _fetchDependencies() {
       // Inside a venv/conda env, `--user` is invalid (pip refuses), so we
       // only add `--user --break-system-packages` when there's no env —
       // for PEP-668-locked system pythons (Arch, newer Debian).
-      const _inEnv = _envState.env === 'venv' || _envState.env === 'conda';
-      const _pipFlags = (!_isWindows() && !_inEnv) ? ' --user --break-system-packages' : '';
       // Use the venv's python3 by absolute path when configured. Even with the
       // env_prefix sourcing activate, SSH non-interactive sessions sometimes
       // pick a `python3` ahead of the venv's bin on PATH, so the install
@@ -952,6 +951,7 @@ async function _fetchDependencies() {
       } else {
         _py = 'python3';
       }
+      const _pipFlags = getPipFlags(_envState.env);
       const cmd = `${_py} -m pip install${upgrade ? ' -U' : ''}${_pipFlags} "${pipName}"`;
       let envPrefix = '';
       if (_isWindows()) {

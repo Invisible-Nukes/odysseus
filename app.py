@@ -58,6 +58,7 @@ from core.constants import (
 from core.database import SessionLocal, ApiToken
 from core.middleware import SecurityHeadersMiddleware, is_cors_preflight
 from core.auth import AuthManager, normalize_known_username
+from core.environment import EnvironmentDetector
 from core.exceptions import (
     SessionNotFoundError, InvalidFileUploadError,
     LLMServiceError, WebSearchError,
@@ -211,6 +212,7 @@ if AUTH_ENABLED:
         "/api/auth/integrations/presets",
         "/api/health",
         "/api/version",
+        "/api/environment/validate",
         "/login",
     }
     AUTH_EXEMPT_PREFIXES = ["/static"]
@@ -907,6 +909,38 @@ async def runtime_info() -> Dict[str, object]:
         "local_env": env_type,
         "local_env_path": env_path,
     }
+
+@app.get("/api/environment/validate")
+async def environment_validate() -> Dict[str, object]:
+    """Comprehensive environment detection and validation.
+    
+    Returns detailed information about the Python environment (venv/conda/bare)
+    to help the frontend avoid generating invalid pip commands like --user
+    inside virtualenvs.
+    
+    Returns:
+        dict with status, environment info, and timestamp:
+            - status: "ok" on success, "error" on failure
+            - environment: EnvironmentInfo dict with type, path, python_version, etc.
+            - timestamp: ISO 8601 formatted UTC timestamp
+    """
+    try:
+        detector = EnvironmentDetector()
+        info = detector.detect()
+        env_dict = info.to_dict()
+        
+        return {
+            "status": "ok",
+            "environment": env_dict,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+    except Exception as e:
+        logger.exception("Environment detection failed")
+        return {
+            "status": "error",
+            "message": "Failed to detect environment",
+            "error": str(e),
+        }
 
 # ========= LIFECYCLE =========
 

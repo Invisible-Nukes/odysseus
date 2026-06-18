@@ -198,22 +198,40 @@ def _pip_install_attempt(pip_cmd: str) -> str:
     """Wrap a single pip install command so its exit status survives the
     fallback chain and its stderr is visible in the tmux log on failure.
 
-    Writes a persistent per-attempt log into ${DATA_DIR:-./data}/logs so
-    operators can inspect the full pip output after the task finishes.
-    On success the wrapper echoes the log path prefixed with "OK"; on
-    failure it prints the last lines and leaves the log for inspection.
+    Writes a temp log under ${DATA_DIR:-./data}/logs, echoes the path on
+    success, prints the last 5 lines on failure, and removes the temp file
+    so the fallback chain keeps the real pip exit status.
+
+    Returns a script string for bash -c '...', properly escaped so that:
+    - Single quotes protect the script from shell interpolation at call time
+    - Variable expansions like $(mktemp) and ${DATA_DIR:-...} are preserved
+      as literal strings in the outer context but expanded by the nested bash
+    - The pip_cmd is properly escaped for safe embedding
+    - Works cross-platform without requiring post-hoc $ escaping
     """
-    # Ensure the logs directory exists and write to a named temp file there so
-    # logs persist beyond the lifetime of the shell. Use mktemp to avoid races.
-    return (
-        "bash -c '"
+    # Escape the pip_cmd for safe embedding in a single-quoted bash string.
+    # Inside single quotes, we cannot use escapes like \', so we must close the
+    # quote, add an escaped quote, and reopen the quote: 'text'\''more text'
+    escaped_cmd = pip_cmd.replace("'", "'\\''")
+    
+    # Build the script using bash syntax with variable expansions and command
+    # substitutions. These will be treated as literal text when passed through
+    # subprocess, but the nested bash -c will properly expand them.
+    script = (
         'mkdir -p "${DATA_DIR:-./data}/logs"; '
-        f'LOGFILE=$(mktemp "${{DATA_DIR:-./data}}/logs/pip_install.XXXXXX.log"); '
-        f'{pip_cmd} >"$LOGFILE" 2>&1; _rc=$?; '
-        'if [ $_rc -eq 0 ]; then echo "OK $LOGFILE"; else echo "ERROR (last 100 lines) from $LOGFILE"; tail -100 "$LOGFILE"; fi; '
+        'export TMPDIR="${DATA_DIR:-./data}/logs"; '
+        'LOGFILE=$(mktemp); '
+        f'{escaped_cmd} >"$LOGFILE" 2>&1; _rc=$?; '
+        'if [ $_rc -eq 0 ]; then echo "OK $LOGFILE"; '
+        'else echo "ERROR (last 5 lines) from $LOGFILE"; tail -5 "$LOGFILE"; fi; '
+        'rm -f "$LOGFILE"; '
         'exit $_rc'
-        "'"
     )
+    
+    # Return the command in bash -c '...' format for proper quoting.
+    # The single quotes prevent variable expansion at the subprocess level,
+    # while still allowing the nested bash to expand them correctly.
+    return f"bash -c '{script}'"
 
 
 def _pip_command(python_cmd: str) -> str:

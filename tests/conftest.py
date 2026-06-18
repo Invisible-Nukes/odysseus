@@ -92,3 +92,122 @@ def pytest_collection_modifyitems(config, items):
         path = getattr(item, "path", None) or item.fspath
         for marker_name in markers_for_path(path):
             item.add_marker(getattr(pytest.mark, marker_name))
+
+
+# =========== ENVIRONMENT DETECTION FIXTURES ===========
+
+import pytest
+from pathlib import Path
+from unittest.mock import patch, MagicMock
+
+
+@pytest.fixture
+def venv_fixture(tmp_path, monkeypatch):
+    """Create a mock venv environment.
+    
+    Returns:
+        dict: Contains 'path', 'bin_dir', 'scripts_dir' keys
+    """
+    venv_path = tmp_path / "venv"
+    venv_path.mkdir()
+    
+    if sys.platform == "win32":
+        scripts_dir = venv_path / "Scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "activate.ps1").touch()
+        (scripts_dir / "activate.bat").touch()
+        (scripts_dir / "python.exe").touch()
+        bin_dir = scripts_dir
+    else:
+        bin_dir = venv_path / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "activate").touch()
+        (bin_dir / "python").touch()
+    
+    return {
+        "path": str(venv_path),
+        "bin_dir": str(bin_dir),
+        "scripts_dir": str(venv_path / "Scripts") if sys.platform == "win32" else None,
+    }
+
+
+@pytest.fixture
+def conda_fixture(tmp_path, monkeypatch):
+    """Create a mock conda environment.
+    
+    Returns:
+        dict: Contains 'path', 'prefix', 'meta_dir' keys
+    """
+    conda_path = tmp_path / "conda_env"
+    conda_path.mkdir()
+    
+    # Create conda-meta directory
+    meta_dir = conda_path / "conda-meta"
+    meta_dir.mkdir()
+    (meta_dir / "history").touch()
+    
+    # Create python executable
+    if sys.platform == "win32":
+        (conda_path / "python.exe").touch()
+    else:
+        bin_dir = conda_path / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "python").touch()
+    
+    monkeypatch.setenv("CONDA_PREFIX", str(conda_path))
+    
+    return {
+        "path": str(conda_path),
+        "prefix": str(conda_path),
+        "meta_dir": str(meta_dir),
+    }
+
+
+@pytest.fixture
+def bare_python_fixture(tmp_path, monkeypatch):
+    """Create a bare Python environment (no venv/conda).
+    
+    Returns:
+        dict: Contains 'python_path', 'base_prefix' keys
+    """
+    # Create a fake base prefix directory
+    base_path = tmp_path / "python_base"
+    base_path.mkdir()
+    
+    return {
+        "python_path": sys.executable,
+        "base_prefix": str(base_path),
+    }
+
+
+@pytest.fixture
+def windows_fixture(monkeypatch):
+    """Mock Windows platform."""
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    return {"platform": "windows"}
+
+
+@pytest.fixture
+def linux_fixture(monkeypatch):
+    """Mock Linux platform."""
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    return {"platform": "linux"}
+
+
+@pytest.fixture
+def macos_fixture(monkeypatch):
+    """Mock macOS platform."""
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    return {"platform": "macos"}
+
+
+@pytest.fixture
+def clear_environment_vars(monkeypatch):
+    """Clear conda-related environment variables."""
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.delenv("CONDA_DEFAULT_ENV", raising=False)
+    monkeypatch.delenv("CONDA_PROMPT_MODIFIER", raising=False)
+    return monkeypatch

@@ -3,6 +3,7 @@
 // Error pattern matching and diagnosis UI
 // ============================================
 
+import { getPipFlags } from './pip-command-builder.js';
 import {
   _envState,
   _loadTasks,
@@ -438,7 +439,8 @@ export const ERROR_PATTERNS = [
         // interactive sessions often pick user-site Python over the venv).
         const _vp = (_envState.env === 'venv' && _envState.envPath)
           ? `${_envState.envPath.replace(/\/+$/, '')}/bin/python3` : 'python3';
-        _launchServeTask('update-vllm', 'pip-update', `${_vp} -m pip install -U vllm transformers`);
+        const _pipFlags = getPipFlags(_envState.env);
+        _launchServeTask('update-vllm', 'pip-update', `${_vp} -m pip install${_pipFlags} -U vllm transformers`);
       }},
     ],
   },
@@ -449,8 +451,7 @@ export const ERROR_PATTERNS = [
       { label: 'Repair kernel package', action: () => {
         const _vp = (_envState.env === 'venv' && _envState.envPath)
           ? `${_envState.envPath.replace(/\/+$/, '')}/bin/python3` : 'python3';
-        const _inEnv = _envState.env === 'venv' || _envState.env === 'conda';
-        const _pipFlags = !_inEnv ? ' --user --break-system-packages' : '';
+        const _pipFlags = getPipFlags(_envState.env);
         _launchServeTask('repair-kernels', 'pip-update', `${_vp} -m pip install${_pipFlags} "kernels<0.15"`);
       }},
       { label: 'Open Dependencies', action: () => _openCookbookDependencies('sglang') },
@@ -504,7 +505,8 @@ export const ERROR_PATTERNS = [
       { label: 'Update triton on server', action: () => {
         const _vp = (_envState.env === 'venv' && _envState.envPath)
           ? `${_envState.envPath.replace(/\/+$/, '')}/bin/python3` : 'python3';
-        _launchServeTask('update-triton', 'pip-update', `${_vp} -m pip install -U triton triton-kernels`);
+        const _pipFlags = getPipFlags(_envState.env);
+        _launchServeTask('update-triton', 'pip-update', `${_vp} -m pip install${_pipFlags} -U triton triton-kernels`);
       }},
     ],
   },
@@ -529,7 +531,8 @@ export const ERROR_PATTERNS = [
       { label: 'Update vLLM on server', action: () => {
         const _vp = (_envState.env === 'venv' && _envState.envPath)
           ? `${_envState.envPath.replace(/\/+$/, '')}/bin/python3` : 'python3';
-        _launchServeTask('update-vllm', 'pip-update', `${_vp} -m pip install -U vllm`);
+        const _pipFlags = getPipFlags(_envState.env);
+        _launchServeTask('update-vllm', 'pip-update', `${_vp} -m pip install${_pipFlags} -U vllm`);
       }},
     ],
   },
@@ -570,12 +573,14 @@ export const ERROR_PATTERNS = [
         // wrong site-packages over SSH when ~/.local/bin precedes the venv.
         const _vp = (_envState.env === 'venv' && _envState.envPath)
           ? `${_envState.envPath.replace(/\/+$/, '')}/bin/python3` : 'python3';
-        _launchServeTask('reinstall-vllm', 'pip-reinstall', `${_vp} -m pip install --force-reinstall vllm`);
+        const _pipFlags = getPipFlags(_envState.env);
+        _launchServeTask('reinstall-vllm', 'pip-reinstall', `${_vp} -m pip install${_pipFlags} --force-reinstall vllm`);
       }},
       { label: 'Upgrade torch only', action: () => {
         const _vp = (_envState.env === 'venv' && _envState.envPath)
           ? `${_envState.envPath.replace(/\/+$/, '')}/bin/python3` : 'python3';
-        _launchServeTask('upgrade-torch', 'pip-update', `${_vp} -m pip install -U torch`);
+        const _pipFlags = getPipFlags(_envState.env);
+        _launchServeTask('upgrade-torch', 'pip-update', `${_vp} -m pip install${_pipFlags} -U torch`);
       }},
     ],
   },
