@@ -449,7 +449,9 @@ export const ERROR_PATTERNS = [
       { label: 'Repair kernel package', action: () => {
         const _vp = (_envState.env === 'venv' && _envState.envPath)
           ? `${_envState.envPath.replace(/\/+$/, '')}/bin/python3` : 'python3';
-        _launchServeTask('repair-kernels', 'pip-update', `${_vp} -m pip install --user --break-system-packages "kernels<0.15"`);
+        const _inEnv = _envState.env === 'venv' || _envState.env === 'conda';
+        const _pipFlags = !_inEnv ? ' --user --break-system-packages' : '';
+        _launchServeTask('repair-kernels', 'pip-update', `${_vp} -m pip install${_pipFlags} "kernels<0.15"`);
       }},
       { label: 'Open Dependencies', action: () => _openCookbookDependencies('sglang') },
     ],

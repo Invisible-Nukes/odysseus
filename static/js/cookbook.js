@@ -925,8 +925,9 @@ async function _fetchDependencies() {
     async function _installDep(pipName, pkgName, isLocalOnly, upgrade, statusEl) {
       if (isLocalOnly) {
         _envState.remoteHost = '';
-        _envState.env = 'none';
-        _envState.envPath = '';
+        // Keep the actual local environment (venv/conda/none) from the backend —
+        // don't override it to 'none'. The backend detected it correctly.
+        // _envState.env and _envState.envPath are already set with the real values.
       } else {
         const depsServerSel = document.getElementById('hwfit-deps-server');
         if (depsServerSel) _applyServerSelection(depsServerSel.value);
@@ -2445,12 +2446,21 @@ export async function open(opts) {
   // holds the last-known state. Gating this on `!synced` left the render's
   // _envState empty whenever sync succeeded → "servers don't show".
   try { Object.assign(_envState, _readStoredEnvState()); } catch {}
+  // Fetch the local environment type (venv/conda/none) from the backend so pip
+  // install commands don't incorrectly add --user flags when running inside a venv.
+  try {
+    const runtimeInfo = await fetch('/api/runtime').then(r => r.json()).catch(() => ({}));
+    if (runtimeInfo.local_env) {
+      _envState.env = runtimeInfo.local_env;
+      _envState.envPath = runtimeInfo.local_env_path || '';
+    }
+  } catch {}
   // Honour a user-set default server: always land on it when Cookbook opens, so
   // every dropdown (scan/download/serve/cache/deps) starts on the same machine.
   if (_envState.defaultServer) {
     const _dk = _envState.defaultServer;
     if (_dk === 'local') {
-      _envState.remoteHost = ''; _envState.env = 'none'; _envState.envPath = ''; _envState.platform = '';
+      _envState.remoteHost = ''; _envState.env = _envState.env || 'none'; _envState.envPath = _envState.envPath || ''; _envState.platform = '';
     } else {
       const _ds = (_envState.servers || []).find(s => s.host === _dk);
       if (_ds) { _envState.remoteHost = _ds.host; _envState.env = _ds.env || 'none'; _envState.envPath = _ds.envPath || ''; _envState.platform = _ds.platform || ''; }

@@ -878,6 +878,7 @@ async def readiness_check() -> JSONResponse:
 
 @app.get("/api/runtime")
 async def runtime_info() -> Dict[str, object]:
+    import sys
     in_docker = os.path.exists("/.dockerenv")
     if not in_docker:
         try:
@@ -891,9 +892,20 @@ async def runtime_info() -> Dict[str, object]:
         or os.getenv("OLLAMA_URL")
         or ("http://host.docker.internal:11434/v1" if in_docker else "http://127.0.0.1:11434/v1")
     )
+    # Detect the local environment type for pip command generation
+    env_type = "none"
+    env_path = ""
+    if sys.prefix != sys.base_prefix:
+        env_type = "venv"
+        env_path = sys.prefix
+    elif os.path.exists(os.path.join(sys.prefix, "conda-meta")):
+        env_type = "conda"
+        env_path = sys.prefix
     return {
         "in_docker": in_docker,
         "ollama_base_url": ollama_url,
+        "local_env": env_type,
+        "local_env_path": env_path,
     }
 
 # ========= LIFECYCLE =========
