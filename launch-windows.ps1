@@ -47,32 +47,32 @@ function Test-Url($url) {
     }
 }
 
+function Save-StartupErrorLog($category, $message, $content = "") {
+    $logsDir = Join-Path $PSScriptRoot "data\logs"
+    if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
+    
+    $timestamp = (Get-Date).ToString("yyyyMMdd_HHmmss")
+    $categoryClean = $category -replace " ", "_"
+    $logPath = Join-Path $logsDir ("error_{0}_{1}.log" -f $categoryClean, $timestamp)
+    
+    $logContent = @(
+        "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
+        "Category: $category",
+        "Message: $message",
+        "---",
+        $content
+    ) -join "`n"
+    
+    $logContent | Out-File -FilePath $logPath -Encoding UTF8 -Force
+    return $logPath
+}
+
 function Open-OdysseusBrowser($url) {
     try {
-        # Try to open in existing Chrome window first
-        $chromePaths = @(
-            (Join-Path $env:ProgramFiles "Google\Chrome\Application\chrome.exe"),
-            (Join-Path ([Environment]::GetEnvironmentVariable('ProgramFiles(x86)')) "Google\Chrome\Application\chrome.exe"),
-            (Join-Path $env:LocalAppData "Google\Chrome\Application\chrome.exe")
-        )
-        
-        $chromeExe = $null
-        foreach ($path in $chromePaths) {
-            if (Test-Path $path) {
-                $chromeExe = $path
-                break
-            }
-        }
-        
-        if ($chromeExe) {
-            # Use --new-window flag to open in a new tab of existing Chrome instance
-            Start-Process -FilePath $chromeExe -ArgumentList $url
-            Write-Host ("Opened Odysseus in Chrome: " + $url) -ForegroundColor Green
-        } else {
-            # Fallback to default browser
-            Start-Process $url
-            Write-Host ("Opened Odysseus in your default browser: " + $url) -ForegroundColor Green
-        }
+        # Use Windows native start command which properly handles opening in existing browser window
+        # The empty string after 'start' is the window title; omitting it prevents opening a cmd window
+        cmd /c start "" $url
+        Write-Host ("Opened Odysseus in your browser: " + $url) -ForegroundColor Green
     } catch {
         Write-Host ("Could not open the browser automatically: " + $_.Exception.Message) -ForegroundColor Yellow
     }
@@ -335,7 +335,7 @@ Write-Host ""
 $startupUrl = "http://{0}:{1}" -f $BindHost, $Port
 
 try {
-    $uvicornProcess = Start-Process -FilePath $venvPy -ArgumentList "-m", "uvicorn", "app:app", "--host", $BindHost, "--port", $Port -RedirectStandardOutput $startupLog -RedirectStandardError $startupLog -PassThru -NoNewWindow
+    $uvicornProcess = Start-Process -FilePath $venvPy -ArgumentList "-m", "uvicorn", "app:app", "--host", $BindHost, "--port", $Port -RedirectStandardOutput $startupLog -PassThru -NoNewWindow
     Write-Host "Starting server in the background..." -ForegroundColor Cyan
     Write-Host ("Server PID: " + $uvicornProcess.Id) -ForegroundColor DarkGray
 
