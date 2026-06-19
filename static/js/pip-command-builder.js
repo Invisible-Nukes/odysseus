@@ -55,3 +55,8 @@ function buildPipInstallCommand(pythonExe, packageName, envType, upgrade = false
   const upgradeFlag = upgrade ? ' -U' : '';
   return `${pythonExe} -m pip install${upgradeFlag}${flags} "${packageName}"`;
 }
+
+/**
+ * Export functions for use in other modules
+ */
+export { getPipFlags, buildPipInstallCommand };
