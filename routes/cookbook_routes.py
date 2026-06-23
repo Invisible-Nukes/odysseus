@@ -302,10 +302,10 @@ def setup_cookbook_routes() -> APIRouter:
             return cmd
 
         repo_id = "cyankiwi/MiniMax-M3-AWQ-INT4"
-        snapshot = (
-            "/home/pewds/.cache/huggingface/hub/"
-            "models--cyankiwi--MiniMax-M3-AWQ-INT4/"
-            "snapshots/4082acbbec1236d21828d55b6bb0fe02ade4ab5b"
+        # Cross-platform path construction for MiniMax M3 snapshot
+        # Uses HUGGINGFACE_HOME which respects platform conventions (Windows: D:\..., Unix: /home/...)
+        snapshot = str(
+            Path(HUGGINGFACE_HOME) / "hub" / "models--cyankiwi--MiniMax-M3-AWQ-INT4" / "snapshots" / "4082acbbec1236d21828d55b6bb0fe02ade4ab5b"
         )
         if body[serve_i + 1] == repo_id:
             body[serve_i + 1] = snapshot
