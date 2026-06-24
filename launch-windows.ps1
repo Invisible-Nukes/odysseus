@@ -326,19 +326,21 @@ if (Test-Path $cudaBase) {
 Write-Step ("Starting Odysseus at http://{0}:{1}" -f $BindHost, $Port)
 $logsDir = Join-Path $PSScriptRoot "data\logs"
 if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
-$startupLog = Join-Path $logsDir ("uvicorn_{0}.log" -f (Get-Date).ToString("yyyyMMdd_HHmmss"))
 
-Write-Host ("Server log: " + $startupLog) -ForegroundColor Green
-Write-Host "Press Ctrl+C to stop the server when you are done." -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Press Ctrl+C to stop the server at any time." -ForegroundColor Yellow
 Write-Host ""
 
 $startupUrl = "http://{0}:{1}" -f $BindHost, $Port
 
 try {
-    $uvicornProcess = Start-Process -FilePath $venvPy -ArgumentList "-m", "uvicorn", "app:app", "--host", $BindHost, "--port", $Port -RedirectStandardOutput $startupLog -PassThru -NoNewWindow
-    Write-Host "Starting server in the background..." -ForegroundColor Cyan
+    # Start uvicorn process without output redirection so logs stream to console
+    $uvicornProcess = Start-Process -FilePath $venvPy -ArgumentList "-m", "uvicorn", "app:app", "--host", $BindHost, "--port", $Port -PassThru -NoNewWindow
+    Write-Host "Starting server..." -ForegroundColor Cyan
     Write-Host ("Server PID: " + $uvicornProcess.Id) -ForegroundColor DarkGray
+    Write-Host ""
 
+    # Wait for server to be ready and open browser
     $openTriggered = $false
     $deadline = (Get-Date).AddSeconds(60)
     while ((Get-Date) -lt $deadline) {
@@ -349,34 +351,47 @@ try {
             if (-not $openTriggered) {
                 Open-OdysseusBrowser $startupUrl
                 $openTriggered = $true
+                Write-Host ""
+                Write-Host "✓ Server is ready and browser tab opened" -ForegroundColor Green
+                Write-Host "✓ Odysseus is now running at $startupUrl" -ForegroundColor Green
+                Write-Host ""
             }
             break
         }
-        Start-Sleep -Seconds 2
+        Start-Sleep -Milliseconds 500
     }
 
     if (-not $openTriggered -and (Test-Url $startupUrl)) {
         Open-OdysseusBrowser $startupUrl
+        Write-Host ""
+        Write-Host "✓ Server is ready and browser tab opened" -ForegroundColor Green
+        Write-Host "✓ Odysseus is now running at $startupUrl" -ForegroundColor Green
+        Write-Host ""
     }
 
     if (-not (Get-Process -Id $uvicornProcess.Id -ErrorAction SilentlyContinue)) {
-        $logPath = Save-StartupErrorLog "uvicorn startup" "Uvicorn exited before the app became ready" (Get-Content -Path $startupLog -Raw -ErrorAction SilentlyContinue)
-        Write-Host "Server startup failed. See log: $logPath" -ForegroundColor Red
-        if (Test-Path $startupLog) {
-            Get-Content -Path $startupLog -Tail 100 | ForEach-Object { Write-Host $_ }
-        }
-        Write-Host "The launcher will stay open so you can inspect the error output." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "ERROR: Server startup failed (process exited unexpectedly)" -ForegroundColor Red
+        Write-Host "Check the terminal output above for error details." -ForegroundColor Red
         return
     }
 
-    Write-Host "Odysseus is running. Keep this window open to keep the server alive." -ForegroundColor Green
+    # Keep the launcher window open while server runs and stream logs
+    Write-Host "═" * 70 -ForegroundColor DarkGray
+    Write-Host "Server logs are streaming below. Press Ctrl+C to stop." -ForegroundColor Cyan
+    Write-Host "═" * 70 -ForegroundColor DarkGray
+    Write-Host ""
+
+    # Monitor the process
     while (Get-Process -Id $uvicornProcess.Id -ErrorAction SilentlyContinue) {
-        Start-Sleep -Seconds 5
+        Start-Sleep -Seconds 1
     }
+    
+    Write-Host ""
+    Write-Host "Server has stopped." -ForegroundColor Yellow
 } catch {
-    $logPath = Save-StartupErrorLog "uvicorn startup" "Uvicorn threw an exception" $_
-    Write-Host "Server startup failed. See log: $logPath" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "ERROR: Server startup failed" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
-    Write-Host "The launcher will stay open so you can inspect the error output." -ForegroundColor Yellow
     return
 }
