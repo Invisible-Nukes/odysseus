@@ -20,6 +20,7 @@ import {
   _serveAutoRetryReplace,
   _serveAutoRetryRemove,
   _serveAutoFix,
+  _isWindows,
   // Plain specifier (no ?v=) — must match every other cookbook.js importer so the
   // browser loads it once. See cookbook-hwfit.js.
 } from './cookbook.js';
@@ -548,7 +549,12 @@ export const ERROR_PATTERNS = [
     pattern: /No space left on device|Disk quota exceeded|ENOSPC/i,
     message: 'Disk full on the server. Free up space before retrying.',
     fixes: [
-      { label: 'Check HF cache size', action: (panel) => _runQuickCmd(panel, 'du -sh ~/.cache/huggingface 2>/dev/null') },
+      { label: 'Check HF cache size', action: (panel) => {
+        const cmd = _isWindows()
+          ? 'powershell -NoProfile -Command "$p=Join-Path $env:USERPROFILE \'.cache\\huggingface\'; if (Test-Path $p) { $s=(Get-ChildItem $p -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum; Write-Host ([math]::Round($s/1GB,2).ToString()+\' GB\') } else { Write-Host \'not found\' }"'
+          : 'du -sh ~/.cache/huggingface 2>/dev/null || powershell -NoProfile -Command "$p=Join-Path $env:USERPROFILE \'.cache\\huggingface\'; if (Test-Path $p) { $s=(Get-ChildItem $p -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum; Write-Host ([math]::Round($s/1GB,2).ToString()+\' GB\') } else { Write-Host \'not found\' }"';
+        _runQuickCmd(panel, cmd);
+      }},
     ],
   },
   {

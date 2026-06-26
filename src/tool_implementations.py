@@ -16,7 +16,13 @@ from fastapi import HTTPException
 from src.constants import MAX_READ_CHARS, DEEP_RESEARCH_DIR, VAULT_FILE
 from src.tool_utils import get_mcp_manager, _parse_tool_args
 from core.constants import internal_api_base
+from core.platform_compat import IS_WINDOWS, kill_process_tree, pid_alive
 from routes._validators import validate_remote_host, validate_ssh_port
+from routes.cookbook_helpers import (
+    resolve_cookbook_log_path,
+    resolve_cookbook_pid_path,
+    win_session_stop_tree_ps,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1463,6 +1469,8 @@ async def _cookbook_env_for_host(host: str) -> Dict[str, Any]:
     env_path = per_host.get("envPath") or env_root.get("envPath") or ""
     platform = per_host.get("platform") or env_root.get("platform") or "linux"
     ssh_port = per_host.get("sshPort") or env_root.get("sshPort") or ""
+    download_dir = per_host.get("downloadDir") or ""
+    default_hub_path = env_root.get("defaultHubPath") or ""
 
     env_prefix = ""
     if env_kind == "venv" and env_path:
@@ -1487,6 +1495,8 @@ async def _cookbook_env_for_host(host: str) -> Dict[str, Any]:
         "platform": platform,
         "hf_token": load_stored_hf_token(),
         "ssh_port": ssh_port,
+        "downloadDir": download_dir,
+        "defaultHubPath": default_hub_path,
     }
 
 
@@ -1573,6 +1583,9 @@ async def _cookbook_register_task(
     *,
     endpoint_added: bool = False,
     endpoint_id: str = "",
+    local_dir: str = "",
+    platform: str = "",
+    ssh_port: str = "",
 ) -> bool:
     """Append a task entry to cookbook_state.json after the agent
     launches via /api/model/serve or /api/model/download. The route
@@ -1609,6 +1622,9 @@ async def _cookbook_register_task(
         f"  target:  {target}{(cmd.split() or [''])[0] if cmd else ''}\n"
         f"  cmd:     {cmd[:200]}{'…' if len(cmd) > 200 else ''}"
     )
+    task_payload: Dict[str, Any] = {"repo_id": model, "remote_host": host or "", "_cmd": cmd}
+    if local_dir:
+        task_payload["local_dir"] = local_dir
     tasks.append({
         "id": session_id,
         "sessionId": session_id,
@@ -1618,10 +1634,10 @@ async def _cookbook_register_task(
         "status": "running",
         "output": placeholder,
         "ts": int(_time.time() * 1000),
-        "payload": {"repo_id": model, "remote_host": host or "", "_cmd": cmd},
+        "payload": task_payload,
         "remoteHost": host or "",
-        "sshPort": "",
-        "platform": "linux",
+        "sshPort": ssh_port or "",
+        "platform": platform or "linux",
         "_serveReady": False,
         "_endpointAdded": bool(endpoint_added),
         "_endpointId": endpoint_id or "",
@@ -1976,6 +1992,8 @@ async def do_download_model(content: str, owner: Optional[str] = None) -> Dict:
     if env_cfg.get("hf_token"):   payload["hf_token"]   = env_cfg["hf_token"]
     if env_cfg.get("platform"):   payload["platform"]   = env_cfg["platform"]
     if env_cfg.get("ssh_port"):   payload["ssh_port"]   = env_cfg["ssh_port"]
+    if env_cfg.get("downloadDir"):
+        payload["local_dir"] = env_cfg["downloadDir"]
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(f"{_INTERNAL_BASE}/api/model/download",
@@ -1987,6 +2005,9 @@ async def do_download_model(content: str, owner: Optional[str] = None) -> Dict:
                 session_id=sid, model=repo_id, host=host,
                 cmd=(f"ollama pull {repo_id}" if backend == "ollama" else f"hf download {repo_id}"),
                 task_type="download",
+                local_dir=payload.get("local_dir") or "",
+                platform=env_cfg.get("platform") or "linux",
+                ssh_port=env_cfg.get("ssh_port") or "",
             )
             note = "" if registered else " (state-write failed — download may not show in UI)"
             where = host or "local"
@@ -2081,7 +2102,9 @@ async def do_serve_model(content: str, owner: Optional[str] = None) -> Dict:
             )
             note = "" if registered else " (state-write failed — task may not show in UI)"
             where = host or "local"
-            log_path = f"/tmp/odysseus-tmux/{sid}.log"
+            log_path = resolve_cookbook_log_path(
+                sid, remote_host=host, platform=env_cfg.get("platform") or ""
+            )
             return {
                 "output": (
                     f"Serving {repo_id} on {where} (session: {sid}){note}\n"
@@ -2230,20 +2253,20 @@ async def do_list_served_models(content: str, owner: Optional[str] = None) -> Di
 
 async def _cookbook_kill_session(session_id: str, *, remote_host: str = "",
                                  ssh_port: str = "", verb: str = "Stopped") -> Dict:
-    """Kill a cookbook tmux session — remote-aware — AND mark the task
-    stopped in cookbook_state.json. Shared by stop_served_model and
-    cancel_download so both behave identically.
+    """Kill a cookbook session — remote-aware — AND mark the task stopped.
 
-    Resolves the task's remote host from state when not passed in. A
-    local-only `tmux kill-session` silently no-ops for remote tasks —
-    that's the bug where "stop the download" appeared to work but the
-    download kept running on the remote host.
+    Local Windows uses detached-process PID files (not tmux). Remote Linux
+    uses tmux kill-session. Resolves the task's remote host from state when
+    not passed in.
     """
     import httpx
     import shlex
+    from pathlib import Path
+
     headers = _internal_headers()
     remote = remote_host or ""
     sport = ssh_port or ""
+    task_platform = ""
 
     # Look up the task's host + confirm it exists in state.
     state: Dict[str, Any] = {}
@@ -2263,7 +2286,14 @@ async def _cookbook_kill_session(session_id: str, *, remote_host: str = "",
                 remote = t.get("remoteHost") or ""
             if not sport:
                 sport = t.get("sshPort") or ""
+            task_platform = (t.get("platform") or "").strip().lower()
             break
+
+    local_windows = (not remote) and IS_WINDOWS
+    already_gone = False
+    kill_failed = False
+    kill_err = ""
+    target_label = session_id
 
     if remote:
         try:
@@ -2271,32 +2301,67 @@ async def _cookbook_kill_session(session_id: str, *, remote_host: str = "",
         except HTTPException as e:
             return {"error": str(getattr(e, "detail", e)), "exit_code": 1}
         _pf = f"-p {shlex.quote(str(sport))} " if sport and str(sport) != "22" else ""
-        cmd = (
-            f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
-            f"{_pf}{shlex.quote(remote)} 'tmux kill-session -t {shlex.quote(session_id)}'"
-        )
+        if task_platform == "windows":
+            ps = win_session_stop_tree_ps(session_id, remote_host=remote)
+            cmd = (
+                f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
+                f"{_pf}{shlex.quote(remote)} "
+                f"powershell -Command {shlex.quote(ps)}"
+            )
+        else:
+            cmd = (
+                f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
+                f"{_pf}{shlex.quote(remote)} 'tmux kill-session -t {shlex.quote(session_id)}'"
+            )
         target_label = f"{session_id} on {remote}"
+    elif local_windows:
+        pid_path = Path(resolve_cookbook_pid_path(session_id))
+        pid = None
+        try:
+            pid_text = pid_path.read_text(encoding="utf-8").strip()
+            if pid_text.isdigit():
+                pid = int(pid_text)
+        except Exception:
+            pid = None
+        if pid and pid_alive(pid):
+            await asyncio.to_thread(kill_process_tree, pid)
+        else:
+            already_gone = True
+        session_dir = pid_path.parent
+        for artifact in session_dir.glob(f"{session_id}.*"):
+            try:
+                artifact.unlink(missing_ok=True)
+            except Exception:
+                pass
+        cmd = None
     else:
         cmd = f"tmux kill-session -t {shlex.quote(session_id)}"
         target_label = session_id
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(f"{_INTERNAL_BASE}/api/shell/exec",
-                                     json={"command": cmd}, headers=headers)
-        if resp.status_code >= 400:
-            return {"error": f"shell/exec returned HTTP {resp.status_code}: {resp.text[:200]}", "exit_code": 1}
-        try:
-            data = resp.json()
-        except Exception:
-            data = {}
-        kill_failed = isinstance(data, dict) and data.get("exit_code") not in (None, 0)
-        kill_err = ((data.get("stderr") or data.get("error") or "").strip() if isinstance(data, dict) else "")
-        # "no server running" / "can't find session" means it was already
-        # gone — treat as success (the goal is "not running").
-        already_gone = any(s in kill_err.lower() for s in ("no server running", "can't find session", "session not found"))
-        if kill_failed and not already_gone:
-            return {"error": f"Failed to {verb.lower()} {target_label}: {kill_err or 'kill-session returned non-zero'}", "exit_code": 1}
+        if cmd is not None:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(f"{_INTERNAL_BASE}/api/shell/exec",
+                                         json={"command": cmd}, headers=headers)
+            if resp.status_code >= 400:
+                return {"error": f"shell/exec returned HTTP {resp.status_code}: {resp.text[:200]}", "exit_code": 1}
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+            kill_failed = isinstance(data, dict) and data.get("exit_code") not in (None, 0)
+            kill_err = ((data.get("stderr") or data.get("error") or "").strip() if isinstance(data, dict) else "")
+            # "no server running" / "can't find session" means it was already
+            # gone — treat as success (the goal is "not running").
+            already_gone = any(
+                s in kill_err.lower()
+                for s in ("no server running", "can't find session", "session not found")
+            )
+            if kill_failed and not already_gone:
+                return {
+                    "error": f"Failed to {verb.lower()} {target_label}: {kill_err or 'kill-session returned non-zero'}",
+                    "exit_code": 1,
+                }
 
         # Update state: mark stopped (so the UI + list reflect reality).
         if matched is not None:
@@ -2383,46 +2448,64 @@ async def do_tail_serve_output(content: str, owner: Optional[str] = None) -> Dic
         except HTTPException as e:
             return {"error": str(getattr(e, "detail", e)), "exit_code": 1}
 
-    # Prefer the persisted /tmp/odysseus-tmux/SESSION.log file over the
-    # live tmux pane. The pane is what the user would see scrolling on
-    # their screen — including the post-crash neofetch banner and the
-    # idle bash prompt that overwrites the actual traceback the moment
-    # vllm exits. The log file is the raw stdout/stderr of the wrapped
-    # process and survives the crash unchanged. We only fall back to
-    # the pane when the log file doesn't exist (older sessions launched
-    # before the tmux+tee wrapper was added).
-    log_path = f"/tmp/odysseus-tmux/{session_id}.log"
-    pane_inner = f"tmux capture-pane -t {shlex.quote(session_id)} -p -S -{tail} 2>/dev/null"
-    file_inner = f"tail -n {tail} {shlex.quote(log_path)} 2>/dev/null"
-    inner = (
-        f"if [ -s {shlex.quote(log_path)} ]; then {file_inner}; "
-        f"else {pane_inner}; fi"
-    )
-    if remote:
-        _pf = f"-p {shlex.quote(str(sport))} " if sport and str(sport) != "22" else ""
-        cmd = (
-            f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
-            f"{_pf}{shlex.quote(remote)} {shlex.quote(inner)}"
-        )
-        host_label = remote
+    host_label = remote or "local"
+    output_text = ""
+    stderr_text = ""
+
+    # Local Windows: read the detached-process log file directly (no tmux/bash).
+    if not remote and IS_WINDOWS:
+        from pathlib import Path
+
+        log_file = Path(resolve_cookbook_log_path(session_id))
+        if log_file.is_file() and log_file.stat().st_size > 0:
+            text = log_file.read_text(encoding="utf-8", errors="replace")
+            output_text = "\n".join(text.splitlines()[-tail:]).strip()
     else:
-        cmd = inner
-        host_label = "local"
+        log_path = resolve_cookbook_log_path(
+            session_id, remote_host=remote, platform=task_platform
+        )
+        if remote and task_platform == "windows":
+            sd = "$env:TEMP\\odysseus-sessions"
+            ps = f'Get-Content "{sd}\\{session_id}.log" -Tail {tail} -ErrorAction SilentlyContinue'
+            _pf = f"-p {shlex.quote(str(sport))} " if sport and str(sport) != "22" else ""
+            cmd = (
+                f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
+                f"{_pf}{shlex.quote(remote)} powershell -Command {shlex.quote(ps)}"
+            )
+        else:
+            pane_inner = f"tmux capture-pane -t {shlex.quote(session_id)} -p -S -{tail} 2>/dev/null"
+            file_inner = f"tail -n {tail} {shlex.quote(log_path)} 2>/dev/null"
+            inner = (
+                f"if [ -s {shlex.quote(log_path)} ]; then {file_inner}; "
+                f"else {pane_inner}; fi"
+            )
+            if remote:
+                _pf = f"-p {shlex.quote(str(sport))} " if sport and str(sport) != "22" else ""
+                cmd = (
+                    f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
+                    f"{_pf}{shlex.quote(remote)} {shlex.quote(inner)}"
+                )
+            else:
+                cmd = inner
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(f"{_INTERNAL_BASE}/api/shell/exec",
+                                         json={"command": cmd}, headers=headers)
+            if resp.status_code >= 400:
+                return {"error": f"shell/exec returned HTTP {resp.status_code}: {resp.text[:200]}", "exit_code": 1}
+            data = resp.json() if resp.content else {}
+            output_text = (data.get("stdout") or "").strip()
+            stderr_text = (data.get("stderr") or "").strip()
+            rc = data.get("exit_code")
+            if rc not in (None, 0) and not output_text:
+                already_gone = any(s in (stderr_text or "").lower() for s in ("no server running", "can't find session", "session not found"))
+                if already_gone:
+                    return {"output": f"Tmux session {session_id} on {host_label} is gone (task already exited).", "exit_code": 0, "session_id": session_id, "host": host_label}
+                return {"error": f"capture-pane failed on {host_label}: {stderr_text or f'exit {rc}'}", "exit_code": 1}
+        except Exception as e:
+            return {"error": str(e), "exit_code": 1}
+
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.post(f"{_INTERNAL_BASE}/api/shell/exec",
-                                     json={"command": cmd}, headers=headers)
-        if resp.status_code >= 400:
-            return {"error": f"shell/exec returned HTTP {resp.status_code}: {resp.text[:200]}", "exit_code": 1}
-        data = resp.json() if resp.content else {}
-        output_text = (data.get("stdout") or "").strip()
-        stderr_text = (data.get("stderr") or "").strip()
-        rc = data.get("exit_code")
-        if rc not in (None, 0) and not output_text:
-            already_gone = any(s in (stderr_text or "").lower() for s in ("no server running", "can't find session", "session not found"))
-            if already_gone:
-                return {"output": f"Tmux session {session_id} on {host_label} is gone (task already exited).", "exit_code": 0, "session_id": session_id, "host": host_label}
-            return {"error": f"capture-pane failed on {host_label}: {stderr_text or f'exit {rc}'}", "exit_code": 1}
         # Dedupe download-progress noise. A 100-shard HF download produces
         # tens of thousands of `model-NN-of-MM.safetensors: 91%|...` lines
         # that all look the same to the agent and drown the actual error.
@@ -2482,7 +2565,11 @@ async def do_list_downloads(content: str, owner: Optional[str] = None) -> Dict:
             model = t.get("model", "?")
             pct = t.get("progress_percent") or t.get("percent")
             pct_str = f" {pct}%" if pct is not None else ""
-            lines.append(f"- {model}: {phase}{pct_str} ({t.get('remote', 'local')}, session: {t.get('session_id', '?')})")
+            dest = (t.get("payload") or {}).get("local_dir") or "default cache"
+            lines.append(
+                f"- {model}: {phase}{pct_str} ({t.get('remote', 'local')}, "
+                f"dir: {dest}, session: {t.get('session_id', '?')})"
+            )
         return {"output": "\n".join(lines), "downloads": tasks, "exit_code": 0}
     except Exception as e:
         return {"error": str(e), "exit_code": 1}
@@ -2797,10 +2884,18 @@ async def do_serve_preset(content: str, owner: Optional[str] = None) -> Dict:
             chosen = p
             break
     if chosen is None:
-        for p in presets:
-            if isinstance(p, dict) and lname in (p.get("name") or "").lower():
-                chosen = p
-                break
+        candidates = [
+            p for p in presets
+            if isinstance(p, dict) and lname in (p.get("name") or "").lower()
+        ]
+        if len(candidates) == 1:
+            chosen = candidates[0]
+        elif len(candidates) > 1:
+            names = ", ".join((p.get("name") or "?") for p in candidates)
+            return {
+                "error": f"Preset name {name!r} matches multiple presets: {names}. Use an exact name.",
+                "exit_code": 1,
+            }
     if chosen is None:
         sample = ", ".join((p.get("name") or "?") for p in presets[:8] if isinstance(p, dict))
         return {"error": f"No preset matching {name!r}. Available: {sample or '(none)'}", "exit_code": 1}

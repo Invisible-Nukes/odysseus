@@ -83,6 +83,8 @@ let _cookbookOpeningSpinners = [];
 export function _lastCacheHost() { return _lastCacheHostVal; }
 export function _setLastCacheHost(v) { _lastCacheHostVal = v; }
 
+export function _defaultHubPath() { return (_envState.defaultHubPath || '').trim() || '~/.cache/huggingface/hub'; }
+
 function _setCookbookOpening(on) {
   // Sidebar (tool-cookbook-btn) deliberately excluded — the inline
   // whirlpool on the sidebar row read as "the click didn't register"
@@ -1770,10 +1772,10 @@ function _wireTabEvents(body) {
       } else {
         srv = _serverByVal(val) || {};
       }
-      if (cacheDirEl) cacheDirEl.value = srv.modelDir || '~/.cache/huggingface/hub';
+      if (cacheDirEl) cacheDirEl.value = srv.modelDir || _defaultHubPath();
       const dirsEl = document.querySelector('.cookbook-serve-dirs');
       if (dirsEl) {
-        const dirs = (Array.isArray(srv.modelDirs) ? srv.modelDirs : [srv.modelDir || '~/.cache/huggingface/hub']).map(d => d.replaceAll('✕', '').replaceAll('✖', '').trim()).filter(Boolean);
+        const dirs = (Array.isArray(srv.modelDirs) ? srv.modelDirs : [srv.modelDir || _defaultHubPath()]).map(d => d.replaceAll('✕', '').replaceAll('✖', '').trim()).filter(Boolean);
         dirsEl.innerHTML = dirs.map(d => `<span class="cookbook-serve-dir-pill">${esc(d)}</span>`).join('') +
           '<span class="cookbook-serve-dir-edit" title="Edit in Settings">edit</span>';
         dirsEl.querySelector('.cookbook-serve-dir-edit')?.addEventListener('click', () => {
@@ -2538,12 +2540,13 @@ export function _serverEntryHtml(s, i, defaultServer, forceRemote, isNew) {
   html += `<span class="cookbook-dep-tag cookbook-dep-target" style="font-size:8px;flex-shrink:0;min-width:46px;text-align:center;visibility:hidden;">placeholder</span>`;
   html += `<span class="cookbook-srv-actions" style="display:inline-flex;gap:4px;align-items:center;width:78px;flex-shrink:0;justify-content:flex-end;"></span>`;
   html += `</div>`;
-  const modelDirs = Array.isArray(s.modelDirs) && s.modelDirs.length ? s.modelDirs : ['~/.cache/huggingface/hub'];
+  const _hubDefault = _defaultHubPath();
+  const modelDirs = Array.isArray(s.modelDirs) && s.modelDirs.length ? s.modelDirs : [_hubDefault];
   const activeDlDir = s.downloadDir || '';
   html += `<div class="cookbook-modeldirs" style="margin:2px 0 0 0;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">`;
   html += `<span style="width:100%;font-size:13px;font-weight:600;margin-bottom:3px;">Model Directory <span style="font-weight:400;opacity:0.5;font-size:11px;">— check the one downloads should go to</span></span>`;
   for (let j = 0; j < modelDirs.length; j++) {
-    const isDefault = modelDirs[j] === '~/.cache/huggingface/hub';
+    const isDefault = modelDirs[j] === _hubDefault || modelDirs[j] === '~/.cache/huggingface/hub';
     const dirVal = isDefault ? '' : modelDirs[j];
     const isTarget = activeDlDir === dirVal;
     const dlBtn = `<span class="cookbook-modeldir-dl${isTarget ? ' active' : ''}" title="${isTarget ? 'Downloads go here' : 'Send downloads here'}" data-dl-dir="${esc(dirVal)}">${isTarget ? _MODELDIR_CHECK_ON : _MODELDIR_CHECK_OFF}</span>`;
@@ -2619,10 +2622,10 @@ function _renderRecipes() {
     return true;
   });
   if (!_localSeen) {
-    _es.servers.unshift({ host: '', env: _es.env || 'none', envPath: _es.envPath || '', modelDir: '~/.cache/huggingface/hub' });
+    _es.servers.unshift({ host: '', env: _es.env || 'none', envPath: _es.envPath || '', modelDir: _defaultHubPath() });
   }
   if (_es.remoteHost && !_es.servers.some(s => s.host === _es.remoteHost)) {
-    _es.servers.push({ host: _es.remoteHost, env: _es.env || 'none', envPath: _es.envPath || '', modelDir: '~/.cache/huggingface/hub' });
+    _es.servers.push({ host: _es.remoteHost, env: _es.env || 'none', envPath: _es.envPath || '', modelDir: _defaultHubPath() });
     _persistEnvState();
   }
   // NOTE: deliberately do NOT auto-pick the first remote server when no host is
@@ -2764,7 +2767,7 @@ function _renderRecipes() {
   html += '<h2 style="margin:0;padding:0;line-height:1;">Serve <span id="serve-stats" class="memory-count" style="font-size:0.6em;opacity:0.6;font-weight:normal"></span></h2>';
   html += '</div>';
   const _selSrv = _es.servers.find(s => s.host === _es.remoteHost) || _es.servers[0] || {};
-  const _srvDirs = (Array.isArray(_selSrv.modelDirs) ? _selSrv.modelDirs : [_selSrv.modelDir || '~/.cache/huggingface/hub']).map(d => d.replaceAll('✕', '').replaceAll('✖', '').trim()).filter(Boolean);
+  const _srvDirs = (Array.isArray(_selSrv.modelDirs) ? _selSrv.modelDirs : [_selSrv.modelDir || _defaultHubPath()]).map(d => d.replaceAll('✕', '').replaceAll('✖', '').trim()).filter(Boolean);
   html += '<div class="cookbook-serve-dirs" style="margin-top:6px;">';
   html += _srvDirs.map(d => `<span class="cookbook-serve-dir-pill">${esc(d)}</span>`).join('');
   html += '<span class="cookbook-serve-dir-edit" title="Edit in Settings">edit</span>';
@@ -3187,6 +3190,7 @@ initRunning({
 // Init download module (adds SSE, panel rendering, download commands)
 initDownload({
   ...shared,
+  _tmuxCmd,
   _addTask,
   _renderRunningTab,
   _loadTasks,

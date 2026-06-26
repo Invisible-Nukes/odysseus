@@ -13,6 +13,7 @@ from routes.cookbook_helpers import (
     _append_pip_install_runner_lines,
     _append_serve_exit_code_lines,
     _append_serve_preflight_exit_lines,
+    _build_dl_pyarg,
     _llama_cpp_rebuild_cmd,
     _append_vllm_linux_preflight_lines,
     _local_tooling_path_export,
@@ -20,6 +21,8 @@ from routes.cookbook_helpers import (
     _pip_install_fallback_chain,
     _ollama_bind_from_cmd,
     _safe_env_prefix,
+    _safe_env_prefix_ps,
+    _strip_path_trailing_seps,
     _user_shell_path_bootstrap,
     _venv_safe_local_pip_install_cmd,
     _normalize_llama_cpp_python_cache_types,
@@ -907,3 +910,59 @@ def test_cached_model_scan_runs_additional_hf_cache(tmp_path):
     assert rec["size_bytes"] == len(b"abc123")
     assert rec["has_incomplete"] is False
     assert rec["is_diffusion"] is False
+
+
+def test_build_dl_pyarg_empty_without_include():
+    assert _build_dl_pyarg(None) == ""
+    assert _build_dl_pyarg("") == ""
+
+
+def test_build_dl_pyarg_allow_patterns_for_include():
+    assert _build_dl_pyarg("*.gguf") == ", allow_patterns=['*.gguf']"
+
+
+def test_strip_path_trailing_seps():
+    assert _strip_path_trailing_seps("D:/models/") == "D:/models"
+    assert _strip_path_trailing_seps(r"D:\models\\") == r"D:\models"
+
+
+def test_safe_env_prefix_ps_accepts_powershell_activation():
+    assert (
+        _safe_env_prefix_ps("& 'C:\\Users\\me\\venv\\Scripts\\Activate.ps1'")
+        == "if (Test-Path 'C:\\Users\\me\\venv\\Scripts\\Activate.ps1') { & 'C:\\Users\\me\\venv\\Scripts\\Activate.ps1' }"
+    )
+
+
+def test_safe_env_prefix_ps_skips_bash_source_guard():
+    assert _safe_env_prefix_ps('[ -f "/path/activate"] && source "/path/activate" || true') is None
+
+
+def test_cached_model_scan_uses_huggingface_hub_cache_env(tmp_path):
+    cache = tmp_path / "data_hf" / "hub"
+    model_dir = cache / "models--acme--env-model"
+    snap = model_dir / "snapshots" / "rev-1"
+    snap.mkdir(parents=True)
+    weights = snap / "model.gguf"
+    weights.write_bytes(b"xyz")
+
+    scan_py = tmp_path / "scan_cache_env.py"
+    scan_py.write_text(_cached_model_scan_script([]), encoding="utf-8")
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("HF_HOME", "HUGGINGFACE_HUB_CACHE", "HF_HUB_CACHE")}
+    env["HUGGINGFACE_HUB_CACHE"] = str(cache)
+    proc = subprocess.run(
+        [sys.executable, str(scan_py)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    models = json.loads(proc.stdout)
+    by_repo = {m["repo_id"]: m for m in models}
+
+    assert "acme/env-model" in by_repo
+    rec = by_repo["acme/env-model"]
+    assert rec["path"] == str(cache)
+    assert rec["nb_files"] == 1
+    assert rec["size_bytes"] == len(b"xyz")

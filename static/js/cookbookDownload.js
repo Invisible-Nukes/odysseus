@@ -6,6 +6,7 @@
 
 import uiModule from './ui.js';
 import { _diagnose, _showDiagnosis, _clearDiagnosis } from './cookbook-diagnosis.js';
+import { _defaultHubPath } from './cookbook.js';
 
 // Shared state/functions injected by init()
 let _envState;
@@ -14,6 +15,7 @@ let _getPort;
 let _getPlatform;
 let _serverByVal;
 let _isWindows;
+let _tmuxCmd;
 let _buildEnvPrefix;
 let _buildServeCmd;
 let _detectBackend;
@@ -121,6 +123,21 @@ function _missingGgufCommand(model) {
   return `printf '%s\\n' ${_bashQuote(msg)} >&2; exit 1`;
 }
 
+/** Task shape for _tmuxCmd session probe/kill (mirrors Running tab tasks). */
+function _downloadSessionTask(taskLike, host = '') {
+  const remoteHost = taskLike?.remoteHost || host || '';
+  const srv = _serverByVal?.(_envState.remoteServerKey || remoteHost) || {};
+  const platform = taskLike?.platform
+    || (remoteHost ? (srv.platform || '') : (_envState.platform || _envState.localPlatform || ''))
+    || (_isWindows() ? 'windows' : 'linux');
+  return {
+    sessionId: taskLike?.sessionId || '',
+    remoteHost,
+    sshPort: taskLike?.sshPort || srv.port || _getPort(remoteHost) || '',
+    platform,
+  };
+}
+
 export function _buildDownloadCmd(model, backend) {
   let cmd = '';
   if (backend === 'ollama') {
@@ -134,9 +151,13 @@ export function _buildDownloadCmd(model, backend) {
       const includePattern = backend === 'llamacpp' ? _ggufIncludePattern(model, ggufSource) : null;
       const includeArg = includePattern ? `, allow_patterns=["${includePattern.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]` : '';
       // Reflect the server's download target in the preview (matches the real
-      // download path built server-side). '' = default HF cache.
+      // download path built server-side via HF_HOME/HUGGINGFACE_HUB_CACHE env).
       const _dlDir = (_serverByVal?.(_envState.remoteServerKey || _envState.remoteHost || '') || {}).downloadDir || '';
-      const _localDirArg = _dlDir ? `, local_dir=os.path.expanduser('${_dlDir.replace(/\/$/, '')}/${repo.split('/').pop()}')` : '';
+      const _hfHome = (_dlDir || (_envState.defaultHuggingfaceHome || '').trim() || '').replace(/\/$/, '');
+      const _pyQuote = (s) => String(s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      const _envSetup = _hfHome
+        ? `os.environ['HF_HOME']='${_pyQuote(_hfHome)}';os.environ['HUGGINGFACE_HUB_CACHE']='${_pyQuote(_hfHome)}/hub';os.environ['HF_HUB_CACHE']='${_pyQuote(_hfHome)}/hub';`
+        : '';
       const _py = _isWindows() ? 'python' : 'python3';
       cmd = `${_py} -u -c "
 import sys, time, os
@@ -187,7 +208,8 @@ from huggingface_hub import snapshot_download
 repo='${repo}'
 print(f'START {repo}',flush=True)
 try:
- path=snapshot_download(repo${includeArg}${_localDirArg})
+${_envSetup ? ' ' + _envSetup : ''}
+ path=snapshot_download(repo${includeArg})
  print(f'DONE {path}',flush=True)
 except Exception as e:
  print(f'ERROR {e}',file=sys.stderr,flush=True);sys.exit(1)
@@ -276,13 +298,16 @@ export function _wirePanelEvents(panel, model, backend) {
     killBtn.addEventListener('click', () => {
       if (panel._cookbookAbort) panel._cookbookAbort.abort();
       const outputText = panel.querySelector('.cookbook-output-pre')?.textContent || '';
-      const tmuxMatch = outputText.match(/Started tmux session: (cookbook-[a-f0-9]+)/);
-      if (tmuxMatch) {
+      const sessionId = panel._cookbookSessionId
+        || outputText.match(/Started tmux session: (\S+)/)?.[1];
+      if (sessionId && _tmuxCmd) {
+        const task = _downloadSessionTask({ sessionId }, _envState.remoteHost || '');
+        const killCmd = _tmuxCmd(task, `kill-session -t ${sessionId}`);
         fetch('/api/shell/exec', {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: `tmux kill-session -t ${tmuxMatch[1]} 2>/dev/null` }),
+          body: JSON.stringify({ command: killCmd }),
         }).catch(() => {});
       }
       const wrap = panel.querySelector('.cookbook-output-wrap');
@@ -415,6 +440,8 @@ export async function _runPanelCmd(panel, cmd, opts = {}) {
           try {
             const ev = JSON.parse(line.slice(6));
             if (ev.data !== undefined) {
+              const sessionMatch = ev.data.match(/Started tmux session: (\S+)/);
+              if (sessionMatch) panel._cookbookSessionId = sessionMatch[1];
               const isProgress = /^FILE .+\d+%/.test(ev.data) || /\d+%\|/.test(ev.data);
               if (isProgress && output.textContent) {
                 const lines = output.textContent.split('\n');
@@ -561,12 +588,10 @@ export async function _runModelDownload(panel, model, backend, hostOverride) {
     && t.sessionId && !String(t.sessionId).startsWith('queue-'));
   if (zombieCandidate) {
     try {
-      const _zh = zombieCandidate.remoteHost || '';
-      const _zPort = (_serverByVal?.(_envState.remoteServerKey || _zh)
-        || (_envState.servers || []).find(s => s.host === _zh) || {}).port;
-      const _sshPf = _zh ? `ssh ${_zPort && _zPort !== '22' ? `-p ${_zPort} ` : ''}${_zh} '` : '';
-      const _sshSf = _zh ? `'` : '';
-      const _probeCmd = `${_sshPf}tmux has-session -t ${zombieCandidate.sessionId} 2>/dev/null${_sshSf}`;
+      const _zTask = _downloadSessionTask(zombieCandidate, host);
+      const _probeCmd = _tmuxCmd
+        ? _tmuxCmd(_zTask, `has-session -t ${zombieCandidate.sessionId}`)
+        : `tmux has-session -t ${zombieCandidate.sessionId} 2>/dev/null`;
       const _r = await fetch('/api/shell/exec', {
         method: 'POST', credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
@@ -634,6 +659,7 @@ export function initDownload(shared) {
   _getPlatform = shared._getPlatform;
   _serverByVal = shared._serverByVal;
   _isWindows = shared._isWindows;
+  _tmuxCmd = shared._tmuxCmd;
   _buildEnvPrefix = shared._buildEnvPrefix;
   _buildServeCmd = shared._buildServeCmd;
   _detectBackend = shared._detectBackend;

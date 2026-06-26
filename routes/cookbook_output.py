@@ -5,11 +5,14 @@ unit-tested without standing up the whole app.
 """
 
 import re
+import shutil
+import sys
 
 _FETCHING_ZERO_FILES_RE = re.compile(r"Fetching\s+0\s+files", re.IGNORECASE)
 
 # Probe scripts for the dead-session download check, run as
-# `python3 -c <PROBE> <repo_id> <cache_root>` (locally or over SSH).
+# `<python> -c <PROBE> <repo_id> <cache_root>` (locally or over SSH).
+# Local probes use resolve_python_for_probe() (sys.executable), not hardcoded python3.
 # cache_root is the task's custom download dir, '' for the default HF cache.
 # It has to be passed explicitly: the download runner exports
 # HF_HOME=<local_dir>, so that task's cache lives under <local_dir>/hub, and
@@ -22,9 +25,8 @@ HF_CACHE_COMPLETE_PROBE = (
     "d=os.path.join(base,'models--'+repo.replace('/','--'));"
     "snap=os.path.join(d,'snapshots');"
     "ok=os.path.isdir(snap) and any(os.path.isdir(os.path.join(snap,x)) and os.listdir(os.path.join(snap,x)) for x in os.listdir(snap));"
-    "inc=False;"
     "blobs=os.path.join(d,'blobs');"
-    "inc=os.path.isdir(blobs) and any(x.endswith('.incomplete') for x in os.listdir(blobs));"
+    "inc=(os.path.isdir(blobs) and any(x.endswith('.incomplete') for x in os.listdir(blobs))) or (os.path.isdir(snap) and any(os.path.isdir(os.path.join(snap,sd)) and any(f.endswith('.incomplete') for f in os.listdir(os.path.join(snap,sd))) for sd in os.listdir(snap)));"
     "sys.exit(0 if ok and not inc else 1)"
 )
 
@@ -34,10 +36,23 @@ HF_CACHE_INCOMPLETE_PROBE = (
     "root=os.path.expanduser(sys.argv[2]) if len(sys.argv)>2 and sys.argv[2] else '';"
     "base=os.path.join(root,'hub') if root else (os.environ.get('HUGGINGFACE_HUB_CACHE') or os.path.join(os.environ.get('HF_HOME', os.path.expanduser('~/.cache/huggingface')), 'hub'));"
     "d=os.path.join(base,'models--'+repo.replace('/','--'));"
+    "snap=os.path.join(d,'snapshots');"
     "blobs=os.path.join(d,'blobs');"
-    "inc=os.path.isdir(blobs) and any(x.endswith('.incomplete') for x in os.listdir(blobs));"
+    "inc=(os.path.isdir(blobs) and any(x.endswith('.incomplete') for x in os.listdir(blobs))) or (os.path.isdir(snap) and any(os.path.isdir(os.path.join(snap,sd)) and any(f.endswith('.incomplete') for f in os.listdir(os.path.join(snap,sd))) for sd in os.listdir(snap)));"
     "sys.exit(0 if inc else 1)"
 )
+
+
+def resolve_python_for_probe() -> str:
+    """Return the Python executable for local HF cache probes.
+
+    Mirrors the local /api/model/cached scan: prefer sys.executable (the venv
+    Odysseus runs under) so native Windows without a python3 shim still works.
+    """
+    return sys.executable or (
+        shutil.which("python3") or shutil.which("python")
+        or shutil.which("py") or "python"
+    )
 
 
 def classify_dead_download(full_snapshot: str):

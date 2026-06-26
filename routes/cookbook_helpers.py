@@ -8,13 +8,14 @@ import os
 import posixpath
 import re
 import shlex
+import tempfile
 from pathlib import Path
 
 from fastapi import HTTPException
 from pydantic import BaseModel
 
 from routes._validators import validate_remote_host, validate_ssh_port
-from core.platform_compat import _ssh_exec_argv
+from core.platform_compat import IS_WINDOWS, _ssh_exec_argv
 
 logger = logging.getLogger(__name__)
 
@@ -1161,6 +1162,77 @@ def _safe_env_prefix(ep: str | None) -> str | None:
     return f'[ -f "{path}" ] && source "{path}" || true'
 
 
+def _strip_path_trailing_seps(path: str) -> str:
+    """Strip trailing / or \\ from a path (Windows-safe)."""
+    return path.rstrip("/\\") if path else path
+
+
+def _build_dl_pyarg(include: str | None) -> str:
+    """Python kwargs fragment for snapshot_download when an include filter is set."""
+    if not include:
+        return ""
+    return f", allow_patterns={repr([include])}"
+
+
+def _safe_env_prefix_ps(ep: str | None) -> str | None:
+    """PowerShell-safe env activation — never injects bash ``[ -f ... ] && source`` syntax."""
+    if not ep:
+        return ep
+    import shlex
+    try:
+        parts = shlex.split(ep, posix=True)
+    except ValueError:
+        raise HTTPException(400, "Invalid env_prefix")
+
+    if len(parts) == 2 and parts[0] == "&":
+        path = parts[1]
+        if any(c in path for c in "\r\n;&|`$<>"):
+            raise HTTPException(400, "Invalid env_prefix")
+        ps_path = path.replace("'", "''")
+        return f"if (Test-Path '{ps_path}') {{ & '{ps_path}' }}"
+
+    if len(parts) == 3 and parts[0] == "conda" and parts[1] == "activate":
+        env = parts[2]
+        if any(c in env for c in "\r\n;&|`$<>"):
+            raise HTTPException(400, "Invalid env_prefix")
+        return f"conda activate {env}"
+
+    m = re.fullmatch(r'eval "\$\(conda shell\.bash hook\)" && conda activate (.+)', ep)
+    if m:
+        env = m.group(1).strip()
+        try:
+            env_parts = shlex.split(env, posix=True)
+        except ValueError:
+            raise HTTPException(400, "Invalid env_prefix")
+        if len(env_parts) != 1:
+            raise HTTPException(400, "Invalid env_prefix")
+        return f"conda activate {env_parts[0]}"
+
+    if len(parts) == 2 and parts[0] in {"source", "."}:
+        path = parts[1]
+        if any(c in path for c in "\r\n;&|`$<>"):
+            raise HTTPException(400, "Invalid env_prefix")
+        ps_path = path
+        if path.startswith("~/"):
+            ps_path = "$env:USERPROFILE\\" + path[2:].replace("/", "\\")
+        elif path.startswith("~\\"):
+            ps_path = "$env:USERPROFILE\\" + path[2:].replace("/", "\\")
+        elif path == "~":
+            ps_path = "$env:USERPROFILE"
+        ps_path = (
+            ps_path.replace("/bin/activate", "/Scripts/Activate.ps1")
+            .replace("\\bin\\activate", "\\Scripts\\Activate.ps1")
+        )
+        if ps_path.endswith("Scripts/Activate.ps1") or ps_path.endswith("Scripts\\Activate.ps1"):
+            ps_path = ps_path.replace("'", "''")
+            return f"if (Test-Path '{ps_path}') {{ & '{ps_path}' }}"
+        return None
+
+    if "[ -f \"" in ep or ep.startswith("eval "):
+        return None
+    raise HTTPException(400, "Invalid env_prefix")
+
+
 def _ssh_ps(host, script_path, port=None):
     """Build SSH command to run a PowerShell script on a Windows remote."""
     pf = f"-p {port} " if port and port != "22" else ""
@@ -1169,6 +1241,65 @@ def _ssh_ps(host, script_path, port=None):
 
 # Windows session dir — stored in user's temp on the remote
 WIN_SESSION_DIR = "$env:TEMP\\\\odysseus-sessions"
+
+_WIN_STOP_TREE_PS = (
+    "function Stop-Tree([int]$Id) { "
+    "Get-CimInstance Win32_Process -Filter ('ParentProcessId = ' + $Id) "
+    "-ErrorAction SilentlyContinue | ForEach-Object { Stop-Tree ([int]$_.ProcessId) }; "
+    "Stop-Process -Id $Id -Force -ErrorAction SilentlyContinue }"
+)
+
+
+def resolve_cookbook_log_path(
+    session_id: str, *, remote_host: str = "", platform: str = ""
+) -> str:
+    """Canonical cookbook session log path for local or remote execution.
+
+    Local Windows uses ``%TEMP%\\odysseus-tmux`` (Git Bash detached wrapper).
+    Remote Windows uses ``%TEMP%\\odysseus-sessions`` (Start-Process runner).
+    Linux/macOS (local or remote) use ``/tmp/odysseus-tmux``.
+    """
+    remote = (remote_host or "").strip()
+    plat = (platform or "").strip().lower()
+    if remote:
+        if plat == "windows":
+            return rf"%TEMP%\odysseus-sessions\{session_id}.log"
+        return f"/tmp/odysseus-tmux/{session_id}.log"
+    if IS_WINDOWS:
+        return str(Path(tempfile.gettempdir()) / "odysseus-tmux" / f"{session_id}.log")
+    return f"/tmp/odysseus-tmux/{session_id}.log"
+
+
+def resolve_cookbook_pid_path(
+    session_id: str, *, remote_host: str = "", platform: str = ""
+) -> str:
+    """Sibling PID file path for ``resolve_cookbook_log_path`` contexts."""
+    log_path = resolve_cookbook_log_path(session_id, remote_host=remote_host, platform=platform)
+    if log_path.endswith(".log"):
+        return log_path[:-4] + ".pid"
+    return log_path + ".pid"
+
+
+def win_session_stop_tree_ps(session_id: str, *, remote_host: str = "") -> str:
+    """PowerShell stop-tree payload mirroring ``cookbookRunning.js``."""
+    remote = (remote_host or "").strip()
+    sid = session_id
+    if remote:
+        sd = "$env:TEMP\\odysseus-sessions"
+        return (
+            f"{_WIN_STOP_TREE_PS}; "
+            f'$p = Get-Content "{sd}\\{sid}.pid" -ErrorAction SilentlyContinue; '
+            f"if ($p -match '^\\d+$') {{ Stop-Tree ([int]$p) }}; "
+            f'Remove-Item "{sd}\\{sid}.*" -Force -ErrorAction SilentlyContinue'
+        )
+    return (
+        f"{_WIN_STOP_TREE_PS}; "
+        f"$p = Get-Content (Join-Path $env:TEMP 'odysseus-tmux\\{sid}.pid') "
+        f"-ErrorAction SilentlyContinue; "
+        f"if ($p -match '^\\d+$') {{ Stop-Tree ([int]$p) }}; "
+        f"Remove-Item (Join-Path $env:TEMP 'odysseus-tmux\\{sid}.*') "
+        f"-Force -ErrorAction SilentlyContinue"
+    )
 
 
 def _diagnose_serve_output(text: str) -> dict | None:

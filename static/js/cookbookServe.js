@@ -11,6 +11,7 @@ import { modelColor } from './chatRenderer.js';
 import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
 import { openCookbookDependencies } from './cookbook-diagnosis.js';
 import { _hwfitCache } from './cookbook-hwfit.js';
+import { _defaultHubPath } from './cookbook.js';
 import { topPortalZ } from './toolWindowZOrder.js';
 
 // Shared state/functions injected by init()
@@ -803,13 +804,15 @@ function _selectedGgufExpr(model, repo, relPath) {
     return `$(printf %s ${_shellPathExpr(`${base}/models--${repo.replace(/\//g, '--')}/snapshots/${rel}`)})`;
   }
   const cacheRepo = repo.replace(/\//g, '--');
-  return `$(printf %s \${HOME}${_shellQuote(`/.cache/huggingface/hub/models--${cacheRepo}/snapshots/${rel}`)})`;
+  const hubBase = _defaultHubPath().replace(/\/+$/, '');
+  return `$(printf %s ${_shellPathExpr(`${hubBase}/models--${cacheRepo}/snapshots/${rel}`)})`;
 }
 
 function _ggufSearchDirExpr(model, repo) {
   if (model.is_local_dir && model.path) return _shellQuote(`${String(model.path || '').replace(/\/+$/, '')}/${repo}`);
   if (model.path) return _shellQuote(`${String(model.path || '').replace(/\/+$/, '')}/models--${repo.replace(/\//g, '--')}/snapshots`);
-  return `"$HOME/.cache/huggingface/hub/models--${repo.replace(/\//g, '--')}/snapshots"`;
+  const hubBase = _defaultHubPath().replace(/\/+$/, '');
+  return _shellQuote(`${hubBase}/models--${repo.replace(/\//g, '--')}/snapshots`);
 }
 
 function _rerenderCachedModels() {
@@ -1152,7 +1155,7 @@ function _rerenderCachedModels() {
       const _ggufOptions = _ggufChoices.map(f =>
         `<option value="${esc(f.rel_path)}"${f.rel_path === _defaultGguf ? ' selected' : ''}>${esc(_ggufFileLabel(f))}</option>`
       ).join('');
-      const _minimaxM3Snapshot = '/home/pewds/.cache/huggingface/hub/models--cyankiwi--MiniMax-M3-AWQ-INT4/snapshots/4082acbbec1236d21828d55b6bb0fe02ade4ab5b';
+      const _minimaxM3Snapshot = `${_defaultHubPath().replace(/\/+$/, '')}/models--cyankiwi--MiniMax-M3-AWQ-INT4/snapshots/4082acbbec1236d21828d55b6bb0fe02ade4ab5b`;
       const _defaultServeModel = _isMiniMaxM3 ? _minimaxM3Snapshot : (m.is_local_dir && m.path ? `${m.path}/${repo}` : repo);
       const _savedModelPath = String(svm('model_path', _defaultServeModel) || '').trim();
       const _modelPathValue = _isMiniMaxM3 && (!_savedModelPath || _savedModelPath === repo) ? _minimaxM3Snapshot : _savedModelPath;
@@ -3359,7 +3362,7 @@ async function _deleteCachedModel(repo, itemEl, skipConfirm = false, model = nul
   // Delete the EXACT on-disk path the scan reported. Models in a custom
   // model dir live at <path>/<repo>; HF-cache models at
   // <path>/models--<org>--<name>. The old code always rm'd the hardcoded
-  // ~/.cache/huggingface/hub path, so models in a custom dir were never
+  // default hub path, so models in a custom dir were never
   // removed and reappeared on the next scan. m.path is already absolute
   // (os.path.expanduser ran on the host); only the bare fallback uses ~.
   let target;
@@ -3368,7 +3371,7 @@ async function _deleteCachedModel(repo, itemEl, skipConfirm = false, model = nul
   } else if (m && m.path) {
     target = `${m.path}/models--${repo.replace(/\//g, '--')}`;
   } else {
-    target = `~/.cache/huggingface/hub/models--${repo.replace(/\//g, '--')}`;
+    target = `${_defaultHubPath().replace(/\/+$/, '')}/models--${repo.replace(/\//g, '--')}`;
   }
   let deleteChoice = { mode: 'repo' };
   const ggufFiles = _ggufFilesForModel(m);
@@ -3613,10 +3616,11 @@ export async function _fetchCachedModels() {
       selectedServer = _envState.servers.find(s => s.host === host) || _envState.servers[0];
     }
     // Read extra model dirs from the SELECTED server's modelDirs (canonical source)
+    const _hubDefault = _defaultHubPath();
     const modelDirs = [];
     if (selectedServer && Array.isArray(selectedServer.modelDirs)) {
       for (const d of selectedServer.modelDirs) {
-        if (d && d !== '~/.cache/huggingface/hub') modelDirs.push(d);
+        if (d && d !== _hubDefault && d !== '~/.cache/huggingface/hub') modelDirs.push(d);
       }
     }
     // Sync the header dir pills to THIS server (the one whose models we're listing).
@@ -3627,7 +3631,7 @@ export async function _fetchCachedModels() {
     if (_dirsEl && selectedServer) {
       const _allDirs = (Array.isArray(selectedServer.modelDirs) && selectedServer.modelDirs.length
         ? selectedServer.modelDirs
-        : [selectedServer.modelDir || '~/.cache/huggingface/hub'])
+        : [selectedServer.modelDir || _defaultHubPath()])
         .map(d => (d || '').replaceAll('✕', '').replaceAll('✖', '').trim()).filter(Boolean);
       _dirsEl.innerHTML = _allDirs.map(d => `<span class="cookbook-serve-dir-pill">${esc(d)}</span>`).join('')
         + '<span class="cookbook-serve-dir-edit" title="Edit in Settings">edit</span>';

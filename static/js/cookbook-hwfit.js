@@ -25,6 +25,7 @@ import {
   _MODELDIR_CHECK_OFF,
   _serverEntryHtml,
   _copyText,
+  _defaultHubPath,
   // Import cookbook.js WITHOUT a ?v= query — the same plain specifier every other
   // importer uses. A query mismatch loads cookbook.js twice as two separate modules
   // (two _envState objects), which silently sent downloads to the wrong server.
@@ -1913,12 +1914,13 @@ export function _hwfitInit() {
         const d = (tag.dataset.dir || '').replaceAll('\u2715', '').replaceAll('\u2716', '').trim();
         if (d) modelDirs.push(d);
       });
-      if (!modelDirs.length) modelDirs.push('~/.cache/huggingface/hub');
+      if (!modelDirs.length) modelDirs.push(_defaultHubPath());
       // Which dir (if any) is flagged as the download target. '' = HF cache.
       const dlEl = entry.querySelector('.cookbook-modeldir-dl.active');
       const downloadDir = dlEl ? (dlEl.dataset.dlDir || '') : '';
       const platform = entry.dataset.platform || '';
-      _envState.servers.push({ name, host: host || '', port, env, envPath, modelDirs, modelDir: modelDirs.filter(d => d !== '~/.cache/huggingface/hub')[0] || modelDirs[0], downloadDir, platform });
+      const _hubDefault = _defaultHubPath();
+      _envState.servers.push({ name, host: host || '', port, env, envPath, modelDirs, modelDir: modelDirs.filter(d => d !== _hubDefault && d !== '~/.cache/huggingface/hub')[0] || modelDirs[0], downloadDir, platform });
     });
     // Do NOT auto-change the selected host here. _syncServers can run while the
     // servers DOM is mid-render — host fields that are disabled/readonly read as
@@ -2360,7 +2362,7 @@ export function _hwfitInit() {
       // Build the new entry with the SAME template as existing servers (Model
       // Directory header, default checkmark, platform icon) \u2014 isNew swaps the
       // delete button for a Save button. forceRemote keeps it editable.
-      const blank = { host: '', name: '', port: '', env: 'none', envPath: '', platform: '', modelDirs: ['~/.cache/huggingface/hub'] };
+      const blank = { host: '', name: '', port: '', env: 'none', envPath: '', platform: '', modelDirs: [_defaultHubPath()] };
       const wrap = document.createElement('div');
       wrap.innerHTML = _serverEntryHtml(blank, idx, _envState.defaultServer || '', true, true);
       const entry = wrap.firstElementChild;

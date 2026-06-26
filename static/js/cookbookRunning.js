@@ -6,6 +6,7 @@
 
 import uiModule from './ui.js';
 import { _diagnose, _showDiagnosis, _clearDiagnosis } from './cookbook-diagnosis.js';
+import { _defaultHubPath } from './cookbook.js';
 import { registerMenuDismiss } from './escMenuStack.js';
 import { computeProgressSignal } from './cookbookProgressSignal.js';
 import { portOf, nextFreePort } from './cookbookPorts.js';
@@ -1226,14 +1227,17 @@ function _syncToServer() {
 function _normalizeState(state) {
   if (!state || typeof state !== 'object') return state;
   if (state.env && Array.isArray(state.env.servers)) {
+    const LEGACY_DEFAULT = '~/.cache/huggingface/hub';
+    const hubDefault = ((state.env.defaultHubPath) || '').trim() || LEGACY_DEFAULT;
     for (const s of state.env.servers) {
       // Collapse legacy modelDir → modelDirs
       let dirs = Array.isArray(s.modelDirs) ? s.modelDirs : [];
       if (s.modelDir && !dirs.includes(s.modelDir)) dirs.push(s.modelDir);
       dirs = dirs
         .map(d => (d || '').replaceAll('\u2715', '').replaceAll('\u2716', '').trim())
-        .filter(Boolean);
-      if (!dirs.includes('~/.cache/huggingface/hub')) dirs.unshift('~/.cache/huggingface/hub');
+        .filter(Boolean)
+        .map(d => (d === LEGACY_DEFAULT ? hubDefault : d));
+      if (!dirs.includes(hubDefault)) dirs.unshift(hubDefault);
       s.modelDirs = [...new Set(dirs)];
       delete s.modelDir; // Drop the legacy singular form
       // A download target that's no longer in the dir list falls back to the
@@ -2146,7 +2150,7 @@ export function _renderRunningTab() {
         <span class="cookbook-task-status ${_bdg.cls}"${_bdgTitle}>${esc(_bdg.text)}</span>
         <button class="cookbook-task-menu-btn" title="Actions">&#8942;</button>
       </div>
-      <div class="cookbook-task-sub"><span class="cookbook-task-session">${esc(task.sessionId)}</span><span class="cookbook-task-uptime" style="display:${((task.type === 'serve' || task.type === 'download') && task.status === 'running') ? '' : 'none'}"></span>${(task.type === 'download') ? `<span class="cookbook-task-dldir" title="Download destination" style="font-size:9px;color:var(--fg-muted);font-family:'Fira Code',monospace;opacity:0.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40ch;">Dir: ${esc(task.payload?.local_dir || '~/.cache/huggingface/hub')}</span>` : ''}</div>
+      <div class="cookbook-task-sub"><span class="cookbook-task-session">${esc(task.sessionId)}</span><span class="cookbook-task-uptime" style="display:${((task.type === 'serve' || task.type === 'download') && task.status === 'running') ? '' : 'none'}"></span>${(task.type === 'download') ? `<span class="cookbook-task-dldir" title="Download destination" style="font-size:9px;color:var(--fg-muted);font-family:'Fira Code',monospace;opacity:0.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40ch;">Dir: ${esc(task.payload?.local_dir || _defaultHubPath())}</span>` : ''}</div>
       <div class="cookbook-output-wrap cookbook-task-collapsible${_mobileCollapseDefault ? ' cookbook-task-collapsed' : ''}"><pre class="cookbook-output-pre">${esc(task.output || '')}</pre><button type="button" class="copy-code cookbook-output-copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>
     `;
 

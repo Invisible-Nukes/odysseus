@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, Depends
 
 from src.auth_helpers import require_user
-from src.constants import COOKBOOK_STATE_FILE, HUGGINGFACE_HOME
+from src.constants import COOKBOOK_STATE_FILE, HUGGINGFACE_HOME, HUGGINGFACE_HUB_CACHE
 from pydantic import BaseModel
 
 from core.middleware import require_admin
@@ -24,6 +24,8 @@ from core.platform_compat import (
     IS_WINDOWS,
     detached_popen_kwargs,
     find_bash,
+    get_wsl_windows_user_profile,
+    is_wsl,
     kill_process_tree,
     pid_alive,
     safe_chmod,
@@ -33,6 +35,7 @@ from routes.shell_routes import TMUX_LOG_DIR
 from routes.cookbook_output import (
     error_aware_output_tail, classify_dead_download,
     HF_CACHE_COMPLETE_PROBE, HF_CACHE_INCOMPLETE_PROBE,
+    resolve_python_for_probe,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,7 +44,8 @@ from routes.cookbook_helpers import (
     _SESSION_ID_RE, _validate_repo_id, _validate_serve_model_id, _validate_include, _validate_token,
     _validate_local_dir, _validate_gpus, _shell_path,
     _ps_squote, _bash_squote, _validate_serve_cmd, _parse_serve_phase,
-    _safe_env_prefix, _local_tooling_path_export, _append_serve_preflight_exit_lines,
+    _safe_env_prefix, _safe_env_prefix_ps, _build_dl_pyarg, _strip_path_trailing_seps,
+    _local_tooling_path_export, _append_serve_preflight_exit_lines,
     _append_serve_exit_code_lines, _append_llama_cpp_linux_accel_build_lines, _cached_model_scan_script,
     load_stored_hf_token,
     _append_vllm_linux_preflight_lines, _ollama_bind_from_cmd, _pip_install_fallback_chain,
@@ -243,13 +247,20 @@ def setup_cookbook_routes() -> APIRouter:
 
     def _state_for_client(state):
         """Return cookbook state without raw secrets for browser clients."""
+        if not isinstance(state, dict):
+            state = {}
         _strip_task_secrets(state)
-        env = state.get("env") if isinstance(state, dict) else None
-        if isinstance(env, dict):
-            token = _decrypt_secret(env.get("hfToken"))
-            env.pop("hfToken", None)
-            env["hfTokenConfigured"] = bool(token)
-            env["hfTokenMasked"] = _mask_secret(token)
+        env = state.get("env")
+        if not isinstance(env, dict):
+            env = {}
+            state["env"] = env
+        token = _decrypt_secret(env.get("hfToken"))
+        env.pop("hfToken", None)
+        env["hfTokenConfigured"] = bool(token)
+        env["hfTokenMasked"] = _mask_secret(token)
+        env["defaultHubPath"] = HUGGINGFACE_HUB_CACHE
+        env["defaultHuggingfaceHome"] = HUGGINGFACE_HOME
+        env["localPlatform"] = "windows" if IS_WINDOWS else "linux"
         return state
 
     def _state_for_storage(state, on_disk=None):
@@ -532,14 +543,14 @@ def setup_cookbook_routes() -> APIRouter:
         # cache survives SSL ReadError mid-stream by reusing <sha>.incomplete,
         # local_dir does not. See issue #2722.
         if req.local_dir:
-            _dl_hf_home_shell = _shell_path(req.local_dir.rstrip("/"))
+            _dl_hf_home_shell = _shell_path(_strip_path_trailing_seps(req.local_dir))
         else:
             # Default to Odysseus-managed HF cache under the app's DATA_DIR so
             # downloads live inside the repository's data/ tree rather than
             # scattered under the user's home. This respects HF_HOME env if set
             # by operators (HUGGINGFACE_HOME), but otherwise centralizes cache.
             _dl_hf_home_shell = _shell_path(HUGGINGFACE_HOME)
-        _dl_pyarg = ""  # snapshot_download honors the env vars too — no kwarg needed
+        _dl_pyarg = _build_dl_pyarg(req.include)
 
         # Build the hf download command. Redirection to suppress the interactive
         # "update available? [Y/n]" prompt is added per-platform further down
@@ -620,7 +631,7 @@ def setup_cookbook_routes() -> APIRouter:
                 # Mirror the bash branch — point the HF cache at the user's dir
                 # via env vars instead of --local-dir, so resume works on flaky
                 # transfers (issue #2722).
-                _dl_ps = _ps_squote(req.local_dir.rstrip("/"))
+                _dl_ps = _ps_squote(_strip_path_trailing_seps(req.local_dir))
                 ps_lines.append(f"$env:HF_HOME = '{_dl_ps}'")
                 ps_lines.append(f"$env:HUGGINGFACE_HUB_CACHE = '{_dl_ps}/hub'")
                 ps_lines.append(f"$env:HF_HUB_CACHE = '{_dl_ps}/hub'")
@@ -628,21 +639,23 @@ def setup_cookbook_routes() -> APIRouter:
                 # Default to Odysseus-managed HF cache under DATA_DIR when no
                 # explicit local_dir is provided. This keeps downloads inside the
                 # repo's data/ tree by default.
-                try:
-                    from src.constants import HUGGINGFACE_HOME
-                    _dl_ps = _ps_squote(HUGGINGFACE_HOME)
-                    ps_lines.append(f"$env:HF_HOME = '{_dl_ps}'")
-                    ps_lines.append(f"$env:HUGGINGFACE_HUB_CACHE = '{_dl_ps}/hub'")
-                    ps_lines.append(f"$env:HF_HUB_CACHE = '{_dl_ps}/hub'")
-                except Exception:
-                    pass
+                _dl_ps = _ps_squote(HUGGINGFACE_HOME)
+                ps_lines.append(f"$env:HF_HOME = '{_dl_ps}'")
+                ps_lines.append(f"$env:HUGGINGFACE_HUB_CACHE = '{_dl_ps}/hub'")
+                ps_lines.append(f"$env:HF_HUB_CACHE = '{_dl_ps}/hub'")
             if req.env_prefix:
-                ps_lines.append(_safe_env_prefix(req.env_prefix))
+                _ps_env = _safe_env_prefix_ps(req.env_prefix)
+                if _ps_env:
+                    ps_lines.append(_ps_env)
             if is_ollama_download:
                 ps_lines.append('if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) { Write-Host "ERROR: Ollama not found. Install from https://ollama.com/download/windows"; exit 127 }')
                 ps_lines.append(f"$null | ollama pull '{_ps_squote(req.repo_id)}'")
                 ps_lines.append('if ($LASTEXITCODE -eq 0) { Write-Host ""; Write-Host "DOWNLOAD_OK" } else { Write-Host ""; Write-Host "DOWNLOAD_FAILED (exit $LASTEXITCODE)" }')
             else:
+                _ps_mw = 4 if req.disable_hf_transfer else 8
+                if req.disable_hf_transfer:
+                    ps_lines.append('$env:HF_HUB_ENABLE_HF_TRANSFER = "0"')
+                    ps_lines.append('$env:HF_HUB_DOWNLOAD_MAX_WORKERS = "4"')
                 # Try hf CLI, fall back to Python huggingface_hub, then auto-install
                 ps_lines.append('try {{')
                 ps_lines.append('  $hfPath = Get-Command hf -ErrorAction SilentlyContinue')
@@ -653,14 +666,18 @@ def setup_cookbook_routes() -> APIRouter:
                 ps_lines.append('    python -c "import huggingface_hub" 2>$null')
                 ps_lines.append('    if ($LASTEXITCODE -eq 0) {{')
                 ps_lines.append('      Write-Host "hf CLI not found, using Python huggingface_hub..."')
-                ps_lines.append('      python -m pip install -q hf_transfer 2>$null')
-                ps_lines.append('      $env:HF_HUB_ENABLE_HF_TRANSFER = "1"')
-                ps_lines.append(f"      python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download('{req.repo_id}'{_dl_pyarg}, max_workers=8)\"")
+                if not req.disable_hf_transfer:
+                    ps_lines.append('      python -m pip install -q hf_transfer 2>$null')
+                    ps_lines.append('      $env:HF_HUB_ENABLE_HF_TRANSFER = "1"')
+                ps_lines.append(f"      python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download('{req.repo_id}'{_dl_pyarg}, max_workers={_ps_mw})\"")
                 ps_lines.append('    }} else {{')
                 ps_lines.append('      Write-Host "Installing huggingface-hub..."')
-                ps_lines.append('      python -m pip install -q huggingface-hub hf_transfer')
-                ps_lines.append('      $env:HF_HUB_ENABLE_HF_TRANSFER = "1"')
-                ps_lines.append(f"      python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download('{req.repo_id}'{_dl_pyarg}, max_workers=8)\"")
+                if req.disable_hf_transfer:
+                    ps_lines.append('      python -m pip install -q huggingface-hub')
+                else:
+                    ps_lines.append('      python -m pip install -q huggingface-hub hf_transfer')
+                    ps_lines.append('      $env:HF_HUB_ENABLE_HF_TRANSFER = "1"')
+                ps_lines.append(f"      python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download('{req.repo_id}'{_dl_pyarg}, max_workers={_ps_mw})\"")
                 ps_lines.append('    }}')
                 ps_lines.append('  }}')
                 ps_lines.append('  if ($LASTEXITCODE -eq 0) {{ Write-Host ""; Write-Host "DOWNLOAD_OK" }}')
@@ -801,7 +818,7 @@ def setup_cookbook_routes() -> APIRouter:
             if not is_ollama_download:
                 lines.append(_HF_TOKEN_STATUS_SNIPPET)
             # Retry loop — same rationale as the remote-bash path. Issue #2722.
-            _hf_invoke = 'eval "$ODYSSEUS_OLLAMA_PULL_CMD" < /dev/null' if is_ollama_download else (hf_cmd if IS_WINDOWS else f"{hf_cmd} < /dev/null")
+            _hf_invoke = 'eval "$ODYSSEUS_OLLAMA_PULL_CMD" < /dev/null' if is_ollama_download else f"{hf_cmd} < /dev/null"
             lines.append('_max_retries=10; _attempt=0; _ec=0')
             lines.append('while [ $_attempt -lt $_max_retries ]; do')
             lines.append('  _attempt=$((_attempt+1))')
@@ -876,7 +893,17 @@ def setup_cookbook_routes() -> APIRouter:
                 d = d.strip()
                 if d:
                     model_dirs.append(d)
-        paths_code = _cached_model_scan_script(model_dirs)
+        add_hf_cache = None
+        if not host:
+            if is_wsl():
+                win_profile = get_wsl_windows_user_profile()
+                if win_profile:
+                    add_hf_cache = os.path.join(win_profile, ".cache", "huggingface", "hub")
+            else:
+                hub = str(HUGGINGFACE_HUB_CACHE)
+                if not any(os.path.normpath(d) == os.path.normpath(hub) for d in model_dirs):
+                    add_hf_cache = hub
+        paths_code = _cached_model_scan_script(model_dirs, add_hf_cache=add_hf_cache)
 
         scan_py = TMUX_LOG_DIR / "scan_cache.py"
         scan_py.write_text(paths_code, encoding="utf-8")
@@ -906,11 +933,15 @@ def setup_cookbook_routes() -> APIRouter:
                 which_tool("python3") or which_tool("python")
                 or which_tool("py") or "python"
             )
+            scan_env = os.environ.copy()
+            scan_env.setdefault("HF_HOME", HUGGINGFACE_HOME)
+            scan_env.setdefault("HUGGINGFACE_HUB_CACHE", HUGGINGFACE_HUB_CACHE)
             proc = await asyncio.create_subprocess_exec(
                 local_py, str(scan_py),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(Path.home()),
+                env=scan_env,
             )
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=60)
 
@@ -1434,7 +1465,9 @@ def setup_cookbook_routes() -> APIRouter:
             if req.gpus:
                 ps_lines.append(f"$env:CUDA_VISIBLE_DEVICES = '{req.gpus}'")
             if req.env_prefix:
-                ps_lines.append(_safe_env_prefix(req.env_prefix))
+                _ps_env = _safe_env_prefix_ps(req.env_prefix)
+                if _ps_env:
+                    ps_lines.append(_ps_env)
             # Auto-install ollama if the command uses it
             if "ollama" in req.cmd:
                 ps_lines.append('# Check if ollama is available')
@@ -2415,8 +2448,8 @@ def setup_cookbook_routes() -> APIRouter:
             try:
                 return _state_for_client(json.loads(_cookbook_state_path.read_text(encoding="utf-8")))
             except Exception:
-                return {}
-        return {}
+                pass
+        return _state_for_client({})
 
     @router.post("/api/cookbook/state")
     async def save_cookbook_state(request: Request):
@@ -3182,7 +3215,8 @@ def setup_cookbook_routes() -> APIRouter:
             """
             if not repo_id or "/" not in repo_id:
                 return False
-            cmd = ["python3", "-c", HF_CACHE_COMPLETE_PROBE, repo_id, cache_root or ""]
+            probe_py = resolve_python_for_probe() if not remote_host else "python3"
+            cmd = [probe_py, "-c", HF_CACHE_COMPLETE_PROBE, repo_id, cache_root or ""]
             try:
                 if remote_host:
                     ssh_base = ["ssh"]
@@ -3191,7 +3225,10 @@ def setup_cookbook_routes() -> APIRouter:
                     shell_cmd = " ".join(shlex.quote(x) for x in cmd)
                     proc = subprocess.run(ssh_base + [remote_host, shell_cmd], timeout=12, capture_output=True)
                 else:
-                    proc = subprocess.run(cmd, timeout=12, capture_output=True)
+                    env = os.environ.copy()
+                    env.setdefault("HF_HOME", HUGGINGFACE_HOME)
+                    env.setdefault("HUGGINGFACE_HUB_CACHE", HUGGINGFACE_HUB_CACHE)
+                    proc = subprocess.run(cmd, timeout=12, capture_output=True, env=env)
                 return proc.returncode == 0
             except Exception:
                 return False
@@ -3205,7 +3242,8 @@ def setup_cookbook_routes() -> APIRouter:
             """
             if not repo_id or "/" not in repo_id:
                 return False
-            cmd = ["python3", "-c", HF_CACHE_INCOMPLETE_PROBE, repo_id, cache_root or ""]
+            probe_py = resolve_python_for_probe() if not remote_host else "python3"
+            cmd = [probe_py, "-c", HF_CACHE_INCOMPLETE_PROBE, repo_id, cache_root or ""]
             try:
                 if remote_host:
                     ssh_base = ["ssh"]
@@ -3214,7 +3252,10 @@ def setup_cookbook_routes() -> APIRouter:
                     shell_cmd = " ".join(shlex.quote(x) for x in cmd)
                     proc = subprocess.run(ssh_base + [remote_host, shell_cmd], timeout=12, capture_output=True)
                 else:
-                    proc = subprocess.run(cmd, timeout=12, capture_output=True)
+                    env = os.environ.copy()
+                    env.setdefault("HF_HOME", HUGGINGFACE_HOME)
+                    env.setdefault("HUGGINGFACE_HUB_CACHE", HUGGINGFACE_HUB_CACHE)
+                    proc = subprocess.run(cmd, timeout=12, capture_output=True, env=env)
                 return proc.returncode == 0
             except Exception:
                 return False
@@ -3306,7 +3347,8 @@ def setup_cookbook_routes() -> APIRouter:
                     remote,
                     "powershell",
                     "-Command",
-                    f"Get-Content \"{sd}\\{session_id}.log\" -Tail 10 -ErrorAction SilentlyContinue",
+                    f"Get-Content \"{sd}\\{session_id}.log\",\"{sd}\\{session_id}.err.log\" "
+                    "-Tail 10 -ErrorAction SilentlyContinue",
                 ]
             elif remote:
                 ssh_base = ["ssh"]

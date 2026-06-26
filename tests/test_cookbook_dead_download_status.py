@@ -14,6 +14,7 @@ from routes.cookbook_output import (
     classify_dead_download,
     HF_CACHE_COMPLETE_PROBE,
     HF_CACHE_INCOMPLETE_PROBE,
+    resolve_python_for_probe,
 )
 
 REPO = "org/some-model-GGUF"
@@ -54,13 +55,17 @@ def test_ollama_pull_output_resolves_completed():
 # ── Cache probe scripts ──
 
 
-def _make_cache(root, repo=REPO, incomplete=False, empty_snapshot=False):
+def _make_cache(root, repo=REPO, incomplete=False, empty_snapshot=False, snapshot_incomplete=False):
     d = os.path.join(root, "hub", "models--" + repo.replace("/", "--"))
     snap = os.path.join(d, "snapshots", "abc123")
     os.makedirs(snap)
     if not empty_snapshot:
-        with open(os.path.join(snap, "model.gguf"), "w") as f:
-            f.write("x")
+        if snapshot_incomplete:
+            with open(os.path.join(snap, "model.gguf.incomplete"), "w") as f:
+                f.write("partial")
+        else:
+            with open(os.path.join(snap, "model.gguf"), "w") as f:
+                f.write("x")
     if incomplete:
         blobs = os.path.join(d, "blobs")
         os.makedirs(blobs)
@@ -122,3 +127,19 @@ def test_incomplete_probe_sees_custom_dir_partials(tmp_path):
     assert _run_probe(HF_CACHE_INCOMPLETE_PROBE, REPO, root) == 0
     # Clean cache → no resumable partials.
     assert _run_probe(HF_CACHE_INCOMPLETE_PROBE, "org/other-model", root) == 1
+
+
+def test_complete_probe_rejects_snapshot_incomplete(tmp_path):
+    root = str(tmp_path)
+    _make_cache(root, snapshot_incomplete=True)
+    assert _run_probe(HF_CACHE_COMPLETE_PROBE, REPO, root) == 1
+
+
+def test_incomplete_probe_sees_snapshot_partials(tmp_path):
+    root = str(tmp_path)
+    _make_cache(root, snapshot_incomplete=True)
+    assert _run_probe(HF_CACHE_INCOMPLETE_PROBE, REPO, root) == 0
+
+
+def test_resolve_python_for_probe_prefers_sys_executable():
+    assert resolve_python_for_probe() == sys.executable

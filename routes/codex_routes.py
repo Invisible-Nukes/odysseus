@@ -19,6 +19,8 @@ from src.auth_helpers import require_authenticated_request, require_user
 from src.tool_implementations import do_manage_notes
 from src.constants import COOKBOOK_STATE_FILE
 from routes._validators import validate_remote_host, validate_ssh_port
+from routes.cookbook_helpers import resolve_cookbook_log_path
+from core.platform_compat import IS_WINDOWS
 
 
 COOKBOOK_READ_SCOPES = {"cookbook:read", "cookbook:launch"}
@@ -574,20 +576,44 @@ def setup_codex_routes(
         if task is None:
             raise HTTPException(404, "task not found")
         host, port_flag = _ssh_prefix_for_task(task)
-        # Prefer the persisted log file over the tmux pane. The pane gets
-        # overwritten by the post-crash neofetch banner + bash prompt the
-        # moment vllm exits; the log file is the raw stdout/stderr and
-        # survives unchanged. Falls back to pane for older tasks predating
-        # the tee-to-log runner change.
-        log_path = f"/tmp/odysseus-tmux/{session_id}.log"
-        inner = (
-            f"if [ -s {log_path} ]; then tail -n {tail} {log_path}; "
-            f"else tmux capture-pane -t {session_id} -p -S -{tail}; fi"
+        task_platform = (task.get("platform") or "").strip().lower()
+
+        if not host and IS_WINDOWS:
+            log_file = Path(resolve_cookbook_log_path(session_id))
+            output = ""
+            if log_file.is_file() and log_file.stat().st_size > 0:
+                text = log_file.read_text(encoding="utf-8", errors="replace")
+                output = "\n".join(text.splitlines()[-tail:])
+            return {
+                "session_id": session_id,
+                "host": "local",
+                "exit_code": 0,
+                "output": output,
+                "task": _redact_task(task),
+            }
+
+        log_path = resolve_cookbook_log_path(
+            session_id, remote_host=host, platform=task_platform
         )
-        if host:
+        if host and task_platform == "windows":
             import shlex
+            ps = (
+                f'Get-Content "$env:TEMP\\odysseus-sessions\\{session_id}.log" '
+                f"-Tail {tail} -ErrorAction SilentlyContinue"
+            )
+            cmd = f"ssh {port_flag}{host} powershell -Command {shlex.quote(ps)}"
+        elif host:
+            import shlex
+            inner = (
+                f"if [ -s {log_path} ]; then tail -n {tail} {log_path}; "
+                f"else tmux capture-pane -t {session_id} -p -S -{tail}; fi"
+            )
             cmd = f"ssh {port_flag}{host} {shlex.quote(inner)}"
         else:
+            inner = (
+                f"if [ -s {log_path} ]; then tail -n {tail} {log_path}; "
+                f"else tmux capture-pane -t {session_id} -p -S -{tail}; fi"
+            )
             cmd = inner
         result = await _run_shell(cmd, timeout=15)
         return {
