@@ -185,19 +185,80 @@ def _ssh_path_override() -> str:
 SSH_PATH_OVERRIDE = _ssh_path_override()
 
 
-def _windows_bash_fallbacks() -> List[str]:
+def _read_git_for_windows_install_path() -> Optional[str]:
+    """Read Git for Windows InstallPath from the registry when present."""
+    if not IS_WINDOWS:
+        return None
+    try:
+        import winreg
+    except ImportError:
+        return None
+    for hive, subkey in (
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\GitForWindows"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\GitForWindows"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\GitForWindows"),
+    ):
+        try:
+            with winreg.OpenKey(hive, subkey) as key:
+                install_path, _ = winreg.QueryValueEx(key, "InstallPath")
+                path = str(install_path).rstrip("\\/")
+                if path:
+                    return path
+        except OSError:
+            pass
+    return None
+
+
+def _git_root_from_git_exe(git_exe: str) -> Optional[str]:
+    """Derive a Git-for-Windows install root from a git.exe path."""
+    git_dir = ntpath.dirname(git_exe)
+    if ntpath.basename(git_dir).lower() in ("cmd", "bin"):
+        return ntpath.dirname(git_dir)
+    return None
+
+
+def _windows_git_install_roots() -> List[str]:
+    """Collect candidate Git-for-Windows install root directories."""
     roots: List[str] = []
+    seen: set[str] = set()
+
+    def _add(root: Optional[str]) -> None:
+        if not root:
+            return
+        key = root.lower()
+        if key not in seen:
+            seen.add(key)
+            roots.append(root)
+
+    _add(_read_git_for_windows_install_path())
+
+    git = which_tool("git")
+    if git:
+        _add(_git_root_from_git_exe(git))
+
     for env_name in _WINDOWS_BASH_ROOT_ENV_VARS:
         base = os.environ.get(env_name)
         if base:
-            roots.append(ntpath.join(base, "Git"))
+            _add(ntpath.join(base, "Git"))
             if env_name == "LocalAppData":
-                roots.append(ntpath.join(base, "Programs", "Git"))
-    roots.extend(_WINDOWS_BASH_DEFAULT_ROOTS)
+                _add(ntpath.join(base, "Programs", "Git"))
+    for root in _WINDOWS_BASH_DEFAULT_ROOTS:
+        _add(root)
 
+    userprofile = os.environ.get("USERPROFILE")
+    if userprofile:
+        _add(ntpath.join(userprofile, "scoop", "apps", "git", "current"))
+    programdata = os.environ.get("ProgramData")
+    if programdata:
+        _add(ntpath.join(programdata, "chocolatey", "lib", "git", "tools", "Git"))
+
+    return roots
+
+
+def _windows_bash_fallbacks() -> List[str]:
     paths: List[str] = []
-    seen = set()
-    for root in roots:
+    seen: set[str] = set()
+    for root in _windows_git_install_roots():
         for rel in _WINDOWS_BASH_RELATIVE_PATHS:
             path = ntpath.join(root, *rel)
             key = path.lower()
@@ -282,41 +343,16 @@ def find_git() -> Optional[str]:
 
     Returns the full path to git if found, otherwise None.
     """
-    # Try a normal which first (covers POSIX + Windows PATHEXT variants)
     git = which_tool("git")
     if git:
         return git
 
-    # On Windows, probe common Git for Windows install locations
     if IS_WINDOWS:
-        candidates = []
-        try:
-            pf = os.environ.get("ProgramFiles")
-            if pf:
-                candidates.append(ntpath.join(pf, "Git", "cmd", "git.exe"))
-                candidates.append(ntpath.join(pf, "Git", "bin", "git.exe"))
-        except Exception:
-            pass
-        try:
-            pf86 = os.environ.get("ProgramFiles(x86)")
-            if pf86:
-                candidates.append(ntpath.join(pf86, "Git", "cmd", "git.exe"))
-        except Exception:
-            pass
-        try:
-            lad = os.environ.get("LocalAppData")
-            if lad:
-                candidates.append(ntpath.join(lad, "Programs", "Git", "cmd", "git.exe"))
-        except Exception:
-            pass
-        # Add fallback defaults
-        candidates.extend([
-            r"C:\Program Files\Git\cmd\git.exe",
-            r"C:\Program Files (x86)\Git\cmd\git.exe",
-        ])
-        for cand in (c for c in candidates if c):
-            if os.path.exists(cand):
-                return cand
+        for root in _windows_git_install_roots():
+            for rel in (("cmd", "git.exe"), ("bin", "git.exe")):
+                cand = ntpath.join(root, *rel)
+                if os.path.exists(cand):
+                    return cand
     return None
 
 

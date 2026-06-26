@@ -77,6 +77,81 @@ def test_find_bash_skips_windows_wsl_stub(monkeypatch):
     assert platform_compat.find_bash() == expected
 
 
+def test_find_bash_uses_registry_install_path(monkeypatch):
+    _reset_bash_cache(monkeypatch)
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(platform_compat.shutil, "which", lambda _name: None)
+    for env_name in platform_compat._WINDOWS_BASH_ROOT_ENV_VARS:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    monkeypatch.delenv("ProgramData", raising=False)
+
+    expected = r"D:\Tools\Git\bin\bash.exe"
+    monkeypatch.setattr(
+        platform_compat,
+        "_read_git_for_windows_install_path",
+        lambda: r"D:\Tools\Git",
+    )
+    monkeypatch.setattr(platform_compat.os.path, "exists", lambda path: path == expected)
+
+    assert platform_compat.find_bash() == expected
+
+
+def test_find_bash_derives_from_git_on_path(monkeypatch):
+    _reset_bash_cache(monkeypatch)
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    git_exe = r"E:\Dev\Git\cmd\git.exe"
+    expected = r"E:\Dev\Git\bin\bash.exe"
+
+    def fake_which(name):
+        if name == "bash":
+            return None
+        if name == "git":
+            return git_exe
+        return None
+
+    monkeypatch.setattr(platform_compat.shutil, "which", fake_which)
+    monkeypatch.setattr(platform_compat, "_read_git_for_windows_install_path", lambda: None)
+    for env_name in platform_compat._WINDOWS_BASH_ROOT_ENV_VARS:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    monkeypatch.delenv("ProgramData", raising=False)
+    monkeypatch.setattr(platform_compat.os.path, "exists", lambda path: path == expected)
+
+    assert platform_compat.find_bash() == expected
+
+
+def test_find_bash_finds_scoop_install(monkeypatch):
+    _reset_bash_cache(monkeypatch)
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(platform_compat.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(platform_compat, "_read_git_for_windows_install_path", lambda: None)
+    for env_name in platform_compat._WINDOWS_BASH_ROOT_ENV_VARS:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\bob")
+    monkeypatch.delenv("ProgramData", raising=False)
+
+    expected = r"C:\Users\bob\scoop\apps\git\current\bin\bash.exe"
+    monkeypatch.setattr(platform_compat.os.path, "exists", lambda path: path == expected)
+
+    assert platform_compat.find_bash() == expected
+
+
+def test_find_git_uses_shared_install_roots(monkeypatch):
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(platform_compat.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        platform_compat,
+        "_read_git_for_windows_install_path",
+        lambda: r"D:\Portable\Git",
+    )
+
+    expected = r"D:\Portable\Git\cmd\git.exe"
+    monkeypatch.setattr(platform_compat.os.path, "exists", lambda path: path == expected)
+
+    assert platform_compat.find_git() == expected
+
+
 def test_is_wsl_true_when_proc_version_mentions_microsoft(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux", raising=False)
 
