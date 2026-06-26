@@ -914,12 +914,12 @@ These are intentional for **remote SSH/bash** targets but wrong as **display def
 | CB-DL-004 | 🟠 High | `snapshot_download` fallback drops `include` filter | `routes/cookbook_routes.py:542`, `658`, `756` | 1 | Fixed |
 | CB-DL-005 | 🟠 High | Agent `download_model` ignores `local_dir` / server `downloadDir` | `src/tool_implementations.py:2749-2761` | 1 | Fixed |
 | CB-DL-006 | 🟠 High | Agent task payload omits `local_dir` → wrong cache probe | `src/tool_implementations.py:2404`, `routes/cookbook_routes.py:3413` | 1 | Fixed |
-| CB-DL-007 | 🟠 High | UI preview uses `local_dir=` flat layout; server uses HF cache | `static/js/cookbookDownload.js:136-190` | 1 | Open |
-| CB-DL-008 | 🟠 High | UI shows `~/.cache/...` default; server uses `DATA_DIR/huggingface` | `static/js/cookbookRunning.js:2152` | 1, 5 | Open |
+| CB-DL-007 | 🟠 High | UI preview uses `local_dir=` flat layout; server uses HF cache | `static/js/cookbookDownload.js:136-190` | 1 | Fixed |
+| CB-DL-008 | 🟠 High | UI shows `~/.cache/...` default; server uses `DATA_DIR/huggingface` | `static/js/cookbookRunning.js:2152` | 1, 5 | Fixed (offline legacy fallback only) |
 | CB-DL-009 | 🟠 High | Remote Windows ignores `disable_hf_transfer` | `routes/cookbook_routes.py:656-663` | 1 | Fixed |
 | CB-DL-010 | 🟠 High | Zombie duplicate check is tmux-only | `static/js/cookbookDownload.js:569` | 1 | Fixed |
 | A5-002 | 🟠 High | JS defaults `~/.cache/huggingface/hub` vs `DATA_DIR/huggingface` on Windows | `cookbook.js`, `cookbookRunning.js`, `cookbook-hwfit.js`, `cookbookServe.js` | 5 | Fixed |
-| A5-004 | 🟡 Medium | Serve GGUF shell expr falls back to `$HOME/.cache` when scan omits `model.path` | `cookbookServe.js:806–812` | 5 | Open |
+| A5-004 | 🟡 Medium | Serve GGUF shell expr falls back to `$HOME/.cache` when scan omits `model.path` | `cookbookServe.js:806–812` | 5 | Fixed |
 | A4-1 | 🟡 Medium | WSL split-cache: `add_hf_cache` hook exists but `/api/model/cached` never passes Windows HF path | `cookbook_helpers.py:396`, `cookbook_routes.py:879`, `platform_compat.py:470` | 2, 4 | Fixed |
 | A4-2 | 🟡 Medium | Docker HF cache uses two in-container paths for same host dir | `docker-compose.yml:14`, `src/constants.py:70` | 4 | Open |
 | A4-3 | 🟡 Medium | `APP_DATA_DIR` (compose) vs `ODYSSEUS_DATA_DIR` (Python) — no shared name | `docker-compose.yml`, `src/constants.py:12` | 4 | Open |
@@ -946,13 +946,13 @@ These are intentional for **remote SSH/bash** targets but wrong as **display def
 | CB-DL-019 | 🟢 Low | Agent registers tasks with `platform: "linux"` always | `src/tool_implementations.py:2407` | 1 | Open |
 | CB-DL-020 | 🟢 Low | `list_downloads` doesn't report destination path | `src/tool_implementations.py:3262-3268` | 1 | Open |
 | A5-005 | 🟢 Low | Diagnosis quick-cmd uses Unix-only `du -sh ~/.cache` | `cookbook-diagnosis.js:551` | 5 | Open |
-| A2-14 | ℹ️ Info | Duplicate `_git_bash_path` / `git_bash_path` implementations | `routes/cookbook_helpers.py:57-62`, `core/platform_compat.py:219-230` | 2 | Open |
+| A2-14 | ℹ️ Info | Duplicate `_git_bash_path` / `git_bash_path` implementations | `routes/cookbook_helpers.py:57-62`, `core/platform_compat.py:219-230` | 2 | Removed |
 | A4-7 | ℹ️ Info | `TMUX_LOG_DIR` under system temp, not `DATA_DIR` | `routes/shell_routes.py:399` | 4 | By design |
 | CB-DL-021 | ℹ️ Info | Cookbook downloads don't use bg_jobs | `routes/cookbook_routes.py:445` | 1 | Info |
 | CB-DL-022 | ℹ️ Info | Hub-cache + `.incomplete` resume design (when paths align) | `routes/cookbook_routes.py:527-533` | 1 | Info |
 | A3-01 | 🟠 High | Cache scan omits `HUGGINGFACE_HUB_CACHE` constant; may miss DATA_DIR downloads | `cookbook_routes.py` `model_cached` | 3 | Fixed |
-| A3-02 | 🟠 High | Serve GGUF fallback hardcodes `$HOME/.cache` when `model.path` absent | `cookbookServe.js:794-813` | 3 | Open |
-| A3-03 | 🟡 Medium | `_normalizeState` adds `~/.cache/hub` but default download uses `{DATA_DIR}/huggingface` | `cookbookRunning.js:1239` | 3 | Open |
+| A3-02 | 🟠 High | Serve GGUF fallback hardcodes `$HOME/.cache` when `model.path` absent | `cookbookServe.js:794-813` | 3 | Fixed |
+| A3-03 | 🟡 Medium | `_normalizeState` adds `~/.cache/hub` but default download uses `{DATA_DIR}/huggingface` | `cookbookRunning.js:1239` | 3 | Fixed |
 | A3-04 | 🟡 Medium | Runtime `find | head -1` can serve wrong quant/mmproj | `cookbookServe.js`, `cookbook.js` | 3 | Open |
 | A3-05 | 🟡 Medium | `serve_preset` substring name match | `tool_implementations.py` | 3 | Open |
 | A3-06 | 🟡 Medium | MiniMax vLLM hardcoded snapshot hash | `cookbook_routes.py:307-311` | 3 | Open |

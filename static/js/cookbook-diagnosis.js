@@ -552,7 +552,7 @@ export const ERROR_PATTERNS = [
       { label: 'Check HF cache size', action: (panel) => {
         const cmd = _isWindows()
           ? 'powershell -NoProfile -Command "$p=Join-Path $env:USERPROFILE \'.cache\\huggingface\'; if (Test-Path $p) { $s=(Get-ChildItem $p -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum; Write-Host ([math]::Round($s/1GB,2).ToString()+\' GB\') } else { Write-Host \'not found\' }"'
-          : 'du -sh ~/.cache/huggingface 2>/dev/null || powershell -NoProfile -Command "$p=Join-Path $env:USERPROFILE \'.cache\\huggingface\'; if (Test-Path $p) { $s=(Get-ChildItem $p -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum; Write-Host ([math]::Round($s/1GB,2).ToString()+\' GB\') } else { Write-Host \'not found\' }"';
+          : 'du -sh ~/.cache/huggingface 2>/dev/null';
         _runQuickCmd(panel, cmd);
       }},
     ],

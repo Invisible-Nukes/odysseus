@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 
 from routes._validators import validate_remote_host, validate_ssh_port
-from core.platform_compat import IS_WINDOWS, _ssh_exec_argv
+from core.platform_compat import IS_WINDOWS, _ssh_exec_argv, git_bash_path
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +53,6 @@ _GPU_LIST_RE = re.compile(r"^\d+(?:,\d+)*$")
 _LOCAL_DIR_RE = re.compile(r"^~?(?:/[\w. -]*)+$|^~$")
 _WINDOWS_LOCAL_DIR_RE = re.compile(r"^[A-Za-z]:[\\/](?:[\w. -]+(?:[\\/][\w. -]+)*[\\/]?)?$")
 _WINDOWS_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
-
-
-def _git_bash_path(path: str) -> str:
-    m = re.match(r"^([A-Za-z]):[\\/](.*)$", path)
-    if not m:
-        return path
-    drive, rest = m.groups()
-    return f"/{drive.lower()}/{rest.replace(chr(92), '/')}"
 
 
 def _validate_repo_id(v: str | None) -> str:
@@ -168,7 +160,7 @@ def _local_tooling_path_export(executable: str) -> str:
         bin_dir = ntpath.dirname(executable)
     else:
         bin_dir = os.path.dirname(os.path.abspath(executable))
-    bin_dir = _git_bash_path(bin_dir)
+    bin_dir = git_bash_path(bin_dir)
     # Escape for a double-quoted context: $PATH must still expand, but spaces
     # and shell metacharacters in the path must be preserved literally.
     esc = (
@@ -1238,9 +1230,6 @@ def _ssh_ps(host, script_path, port=None):
     pf = f"-p {port} " if port and port != "22" else ""
     return f'ssh {pf}{host} "powershell -ExecutionPolicy Bypass -File {script_path}"'
 
-
-# Windows session dir — stored in user's temp on the remote
-WIN_SESSION_DIR = "$env:TEMP\\\\odysseus-sessions"
 
 _WIN_STOP_TREE_PS = (
     "function Stop-Tree([int]$Id) { "

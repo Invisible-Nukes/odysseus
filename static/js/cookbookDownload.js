@@ -589,9 +589,7 @@ export async function _runModelDownload(panel, model, backend, hostOverride) {
   if (zombieCandidate) {
     try {
       const _zTask = _downloadSessionTask(zombieCandidate, host);
-      const _probeCmd = _tmuxCmd
-        ? _tmuxCmd(_zTask, `has-session -t ${zombieCandidate.sessionId}`)
-        : `tmux has-session -t ${zombieCandidate.sessionId} 2>/dev/null`;
+      const _probeCmd = _tmuxCmd(_zTask, `has-session -t ${zombieCandidate.sessionId}`);
       const _r = await fetch('/api/shell/exec', {
         method: 'POST', credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
