@@ -318,10 +318,6 @@ let _serverKey;
 let _selectedServer;
 let modelLogo;
 let esc;
-let _detectBackend;
-let _detectToolParser;
-let _detectModelOptimizations;
-let _buildServeCmd;
 
 function _taskServerSelection(task) {
   const host = task?.remoteHost || task?.payload?.remote_host || '';
@@ -3968,10 +3964,6 @@ export function initRunning(shared) {
   _selectedServer = shared._selectedServer;
   modelLogo = shared.modelLogo;
   esc = shared.esc;
-  _detectBackend = shared._detectBackend;
-  _detectToolParser = shared._detectToolParser;
-  _detectModelOptimizations = shared._detectModelOptimizations;
-  _buildServeCmd = shared._buildServeCmd;
 
   // App boot: pull authoritative state from server, then auto-start
   // the background monitor unconditionally. Used to gate on "already

@@ -6,33 +6,24 @@
 
 import uiModule from './ui.js';
 import { _diagnose, _showDiagnosis, _clearDiagnosis } from './cookbook-diagnosis.js';
-import { _defaultHubPath } from './cookbook.js';
 
 // Shared state/functions injected by init()
 let _envState;
 let _sshCmd;
 let _getPort;
-let _getPlatform;
 let _serverByVal;
 let _isWindows;
 let _tmuxCmd;
 let _buildEnvPrefix;
 let _buildServeCmd;
-let _detectBackend;
-let _detectToolParser;
 let _loadPresets;
 let _savePresets;
 let _copyText;
 let _persistEnvState;
-let modelLogo;
-let esc;
 let _addTask;
 let _renderRunningTab;
 let _loadTasks;
 let _saveTasks;
-
-// Storage keys
-const SERVE_STATE_KEY = 'cookbook-serve-state';
 
 // ── Panel field helpers ──
 
@@ -654,20 +645,15 @@ export function initDownload(shared) {
   _envState = shared._envState;
   _sshCmd = shared._sshCmd;
   _getPort = shared._getPort;
-  _getPlatform = shared._getPlatform;
   _serverByVal = shared._serverByVal;
   _isWindows = shared._isWindows;
   _tmuxCmd = shared._tmuxCmd;
   _buildEnvPrefix = shared._buildEnvPrefix;
   _buildServeCmd = shared._buildServeCmd;
-  _detectBackend = shared._detectBackend;
-  _detectToolParser = shared._detectToolParser;
   _loadPresets = shared._loadPresets;
   _savePresets = shared._savePresets;
   _copyText = shared._copyText;
   _persistEnvState = shared._persistEnvState;
-  modelLogo = shared.modelLogo;
-  esc = shared.esc;
   _addTask = shared._addTask;
   _renderRunningTab = shared._renderRunningTab;
   _loadTasks = shared._loadTasks;

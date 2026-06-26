@@ -39,7 +39,6 @@ import { topPortalZ } from './toolWindowZOrder.js';
 
 const STORAGE_KEY = 'cookbook-presets';
 const LAST_STATE_KEY = 'cookbook-last-state';
-const SERVE_STATE_KEY = 'cookbook-serve-state';
 
 // Global, once: tag chip rows (.doclib-lang-chips) scroll horizontally on mobile.
 // Stop their touch events (capture phase, before any ancestor sees them) so a
