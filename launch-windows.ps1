@@ -186,6 +186,119 @@ function Install-OdysseusDependencies($venvPy, $installLog) {
     }
 }
 
+function Test-ChromaDbReachable($HostName, $Port) {
+    try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $connect = $tcp.BeginConnect($HostName, [int]$Port, $null, $null)
+        if (-not $connect.AsyncWaitHandle.WaitOne([TimeSpan]::FromSeconds(2), $false)) {
+            $tcp.Close()
+            return $false
+        }
+        $reachable = $tcp.Connected
+        $tcp.Close()
+        return $reachable
+    } catch {
+        return $false
+    }
+}
+
+function Get-ChromaDbLauncherPath($venvPy) {
+    $chromaExe = Join-Path (Split-Path $venvPy -Parent) "chroma.exe"
+    if (Test-Path $chromaExe) { return $chromaExe }
+    return $null
+}
+
+function Test-ChromaDbPackageReady($venvPy) {
+    if (Get-ChromaDbLauncherPath $venvPy) { return $true }
+    & $venvPy -m pip show chromadb 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Ensure-ChromaDbPackage($venvPy) {
+    $chromaExe = Get-ChromaDbLauncherPath $venvPy
+    if ($chromaExe) {
+        Write-Host "ChromaDB server already installed in venv - skipping pip install."
+        return $chromaExe
+    }
+    if (Test-ChromaDbPackageReady $venvPy) {
+        Write-Host "ChromaDB package found in venv but chroma.exe is missing; repairing..." -ForegroundColor Yellow
+        & $venvPy -m pip install -q --force-reinstall chromadb
+    } else {
+        Write-Host "ChromaDB server not found in venv; installing chromadb (first run can take a minute)..." -ForegroundColor Cyan
+        & $venvPy -m pip install -q chromadb
+    }
+    if ($LASTEXITCODE -ne 0) { return $null }
+    $chromaExe = Get-ChromaDbLauncherPath $venvPy
+    if ($chromaExe) {
+        Write-Host "ChromaDB server installed successfully." -ForegroundColor Green
+    }
+    return $chromaExe
+}
+
+function Start-OdysseusChromaDb($chromaExe, $dataDir, $logsDir) {
+    $chromaHost = if ($env:CHROMADB_HOST) { $env:CHROMADB_HOST.Trim() } else { "localhost" }
+    $chromaPort = if ($env:CHROMADB_PORT) { [int]$env:CHROMADB_PORT } else { 8100 }
+    $localHosts = @("localhost", "127.0.0.1", "::1")
+    if ($chromaHost -notin $localHosts) {
+        Write-Host ("CHROMADB_HOST=$chromaHost is remote - not starting a local ChromaDB.") -ForegroundColor DarkGray
+        return $null
+    }
+
+    # Pin probe/bind to IPv4 loopback: Odysseus defaults to localhost:8100 and
+    # binding chroma to the literal "localhost" can land on IPv6 ::1 instead.
+    $probeHost = "127.0.0.1"
+    if (Test-ChromaDbReachable $probeHost $chromaPort) {
+        Write-Host ("ChromaDB already running on ${probeHost}:${chromaPort} - using it.") -ForegroundColor Green
+        return $null
+    }
+
+    if (-not $chromaExe) {
+        Write-Host "WARNING: ChromaDB server CLI unavailable. Vector RAG/memory will be degraded." -ForegroundColor Yellow
+        return $null
+    }
+
+    $chromaDataDir = Join-Path $dataDir "chroma"
+    if (-not (Test-Path $chromaDataDir)) {
+        New-Item -ItemType Directory -Path $chromaDataDir -Force | Out-Null
+    }
+
+    $chromaLog = Join-Path $logsDir ("chromadb_{0}.log" -f (Get-Date).ToString("yyyyMMdd_HHmmss"))
+    Write-Host ("Starting ChromaDB on ${probeHost}:${chromaPort} (data: ${chromaDataDir})...") -ForegroundColor Cyan
+    Write-Host ("  logging to $chromaLog") -ForegroundColor DarkGray
+
+    $chromaProc = Start-Process -FilePath $chromaExe -ArgumentList @(
+        "run", "--host", $probeHost, "--port", [string]$chromaPort, "--path", $chromaDataDir
+    ) -PassThru -WindowStyle Hidden -RedirectStandardOutput $chromaLog -RedirectStandardError ($chromaLog + ".err")
+
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-Process -Id $chromaProc.Id -ErrorAction SilentlyContinue)) {
+            Write-Host "WARNING: ChromaDB exited during startup. Check $chromaLog" -ForegroundColor Yellow
+            return $null
+        }
+        if (Test-ChromaDbReachable $probeHost $chromaPort) {
+            Write-Host ("ChromaDB ready on ${probeHost}:${chromaPort}") -ForegroundColor Green
+            return $chromaProc.Id
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    Write-Host "WARNING: ChromaDB did not become reachable within 30s. Continuing in degraded mode." -ForegroundColor Yellow
+    return $chromaProc.Id
+}
+
+function Stop-OdysseusChromaDb($processId) {
+    if (-not $processId) { return }
+    if (-not (Get-Process -Id $processId -ErrorAction SilentlyContinue)) { return }
+    Write-Host ""
+    Write-Host ("Stopping ChromaDB (PID {0})..." -f $processId) -ForegroundColor Yellow
+    try {
+        & taskkill.exe /PID $processId /T /F 2>$null | Out-Null
+    } catch {
+        try { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue } catch {}
+    }
+}
+
 function Find-GitExe {
     # Try Get-Command first (may be on PATH). If not, probe common Git for Windows install locations.
     $cmd = Get-Command git -ErrorAction SilentlyContinue
@@ -348,6 +461,15 @@ if (-not (Test-Path $ollamaExe)) {
     }
 }
 
+# 5c. ChromaDB backs vector RAG, memory vectors, and the tool index. Install
+#     the server package if needed, then start it before uvicorn when
+#     CHROMADB_HOST points at this machine. Stops when the launcher exits.
+Write-Step "Checking for ChromaDB"
+if (-not $env:CHROMADB_HOST) { $env:CHROMADB_HOST = "localhost" }
+if (-not $env:CHROMADB_PORT) { $env:CHROMADB_PORT = "8100" }
+$chromaExe = Ensure-ChromaDbPackage $venvPy
+$startedChromaPid = Start-OdysseusChromaDb $chromaExe $env:ODYSSEUS_DATA_DIR $logsDir
+
 # 6. Point CUDA_PATH at a real CUDA toolkit so GPU llama-cpp-python can import.
 $cudaBase = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
 if (Test-Path $cudaBase) {
@@ -432,5 +554,6 @@ try {
     Write-Host ""
     Write-Host "ERROR: Server startup failed" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
-    return
+} finally {
+    Stop-OdysseusChromaDb $startedChromaPid
 }
