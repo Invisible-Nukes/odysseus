@@ -137,6 +137,55 @@ function Find-GitBash {
     return $null
 }
 
+function Test-OdysseusDepsReady($venvPy) {
+    if (-not (Test-Path $venvPy)) { return $false }
+    & $venvPy -c "import uvicorn, sqlalchemy" 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Install-OdysseusDependencies($venvPy, $installLog) {
+    $pipArgs = @("-m", "pip", "install", "--retries", "5", "--timeout", "120")
+    $attempts = @(
+        @{ Label = "pip upgrade"; Args = @($pipArgs + @("--upgrade", "pip")) },
+        @{ Label = "requirements.txt"; Args = @($pipArgs + @("-r", "requirements.txt")) }
+    )
+
+    foreach ($step in $attempts) {
+        $maxTries = 3
+        for ($try = 1; $try -le $maxTries; $try++) {
+            Write-Host ("  {0} (attempt {1}/{2})..." -f $step.Label, $try, $maxTries)
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            & $venvPy @($step.Args) *> $installLog
+            $exitCode = $LASTEXITCODE
+            $ErrorActionPreference = $prevEap
+
+            if ($exitCode -eq 0) { break }
+
+            $tail = @()
+            if (Test-Path $installLog) {
+                $tail = Get-Content -Path $installLog -Tail 30 -ErrorAction SilentlyContinue
+            }
+            $tailText = ($tail -join "`n")
+            $cacheCorrupt = $tailText -match "IncompleteRead|Connection broken|ContentDecodingError|hash mismatch"
+
+            if ($cacheCorrupt -and $try -lt $maxTries) {
+                Write-Host "  pip hit a corrupted download/cache entry; purging pip cache and retrying..." -ForegroundColor Yellow
+                & $venvPy -m pip cache purge *> $null
+                Start-Sleep -Seconds 2
+                continue
+            }
+
+            Write-Host ("  {0} failed. Last lines from {1}:" -f $step.Label, $installLog) -ForegroundColor Red
+            $tail | ForEach-Object { Write-Host $_ }
+            Fail "Dependency install failed during $($step.Label). Inspect $installLog for details."
+        }
+        if ($LASTEXITCODE -ne 0) {
+            Fail "Dependency install failed during $($step.Label). Inspect $installLog for details."
+        }
+    }
+}
+
 function Find-GitExe {
     # Try Get-Command first (may be on PATH). If not, probe common Git for Windows install locations.
     $cmd = Get-Command git -ErrorAction SilentlyContinue
@@ -238,30 +287,20 @@ if (-not (Test-Path $venvPy)) {
     Write-Host "venv already exists - skipping creation."
 }
 
-# 3. Install / update dependencies
-Write-Step "Installing dependencies (first run can take a few minutes)"
-# Write full pip output to a timestamped log under the repo-managed data/logs
-# so failures are visible in the same checkout-local tree.
+# 3. Install / update dependencies (skip when venv already has core packages)
 $logsDir = Join-Path $PSScriptRoot "data\logs"
 if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
 $ts = (Get-Date).ToString("yyyyMMdd_HHmmss")
 $installLog = Join-Path $logsDir ("pip_install_$ts.log")
 
-Write-Host "Installing Python packages; logging to $installLog"
-& $venvPy -m pip install --upgrade pip > $installLog 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host ("pip upgrade failed. See " + $installLog) -ForegroundColor Red
-    Get-Content -Path $installLog -Tail 50 | ForEach-Object { Write-Host $_ }
-    Fail "Dependency install failed during pip upgrade. See the log above."
+if (Test-OdysseusDepsReady $venvPy) {
+    Write-Host "Dependencies already installed in venv - skipping pip install."
+} else {
+    Write-Step "Installing dependencies (first run can take a few minutes)"
+    Write-Host "Installing Python packages; logging to $installLog"
+    Install-OdysseusDependencies $venvPy $installLog
+    Write-Host ("Dependencies installed successfully (log: " + $installLog + ")") -ForegroundColor Green
 }
-
-& $venvPy -m pip install -r requirements.txt > $installLog 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host ("Dependency install failed. Last 100 lines from " + $installLog + ":") -ForegroundColor Red
-    Get-Content -Path $installLog -Tail 100 | ForEach-Object { Write-Host $_ }
-    Fail "Dependency install failed. Inspect $installLog for details."
-}
-Write-Host ("Dependencies installed successfully (log: " + $installLog + ")") -ForegroundColor Green
 
 # 4. First-time setup (creates data dirs, DB, .env, admin user)
 Write-Step "Running first-time setup"
