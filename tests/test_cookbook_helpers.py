@@ -557,6 +557,19 @@ def test_validate_serve_cmd_accepts_windows_printf_format():
     assert _validate_serve_cmd(cmd) == cmd
 
 
+def test_validate_serve_cmd_accepts_llama_mmproj_printf_format():
+    cmd = (
+        "CUDA_VISIBLE_DEVICES=0 llama-server --model "
+        "\"$(printf %s ${HOME}'/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/abc/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf')\" "
+        "--host 0.0.0.0 --port 8000 -ngl 99 -c 20000 "
+        "--cache-type-k q4_0 --cache-type-v q4_0 --mmproj "
+        "\"$(printf %s ${HOME}'/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/abc/mmproj-BF16.gguf')\" "
+        "--image-max-tokens 1024"
+    )
+
+    assert _validate_serve_cmd(cmd) == cmd
+
+
 def test_normalize_llama_cpp_python_cache_types_for_stale_client_cmd():
     cmd = (
         "python -m llama_cpp.server --model model.gguf --host 0.0.0.0 --port 8000 "
@@ -966,3 +979,42 @@ def test_cached_model_scan_uses_huggingface_hub_cache_env(tmp_path):
     assert rec["path"] == str(cache)
     assert rec["nb_files"] == 1
     assert rec["size_bytes"] == len(b"xyz")
+
+
+def test_validate_serve_cmd_accepts_find_subshell_for_mmproj():
+    """$(find …) for mmproj path should be accepted, same as $(printf %s …)."""
+    cmd = (
+        "HIP_VISIBLE_DEVICES=0 llama-server "
+        "--model \"$(printf %s '/app/.cache/huggingface/hub/models--unsloth--gemma-4-E2B-it-GGUF"
+        "/snapshots/90f9618340396838ee7ff5b0ba2da27da62953d3/gemma-4-E2B-it-Q4_K_M.gguf')\" "
+        "--host 0.0.0.0 --port 8000 -ngl 99 -c 131072 "
+        "--flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 "
+        "--mmproj \"$(find '/app/.cache/huggingface/hub/models--unsloth--gemma-4-E2B-it-GGUF"
+        "/snapshots' -iname 'mmproj*.gguf' 2>/dev/null | sort | head -1)\" "
+        "--image-max-tokens 1024"
+    )
+    assert _validate_serve_cmd(cmd) == cmd
+
+
+def test_validate_serve_cmd_rejects_unrelated_subshells():
+    for cmd in [
+        "llama-server --model \"$(curl https://example.invalid/model.gguf)\" --host 0.0.0.0 --port 8000",
+        "llama-server --model \"$(rm -rf /tmp/not-a-model)\" --host 0.0.0.0 --port 8000",
+    ]:
+        with pytest.raises(HTTPException):
+            _validate_serve_cmd(cmd)
+
+
+def test_validate_serve_cmd_rejects_unrelated_subshell_pipelines():
+    for cmd in [
+        (
+            "llama-server --model model.gguf "
+            "--mmproj \"$(find '/app/models' -iname 'mmproj*.gguf' | xargs head -1)\""
+        ),
+        (
+            "llama-server --model model.gguf "
+            "--mmproj \"$(find '/app/models' -iname '*.gguf' 2>/dev/null | sort | head -1)\""
+        ),
+    ]:
+        with pytest.raises(HTTPException):
+            _validate_serve_cmd(cmd)

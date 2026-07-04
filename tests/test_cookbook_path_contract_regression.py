@@ -29,7 +29,7 @@ def test_state_for_client_exposes_default_hub_paths():
     assert 'env["defaultHubPath"] = HUGGINGFACE_HUB_CACHE' in source
     assert 'env["defaultHuggingfaceHome"] = HUGGINGFACE_HOME' in source
     assert 'env["localPlatform"]' in source
-    assert "return _state_for_client({})" in source
+    assert "_state_for_client({})" in source
     assert "HUGGINGFACE_HUB_CACHE" in source
 
 
