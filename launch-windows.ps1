@@ -139,8 +139,12 @@ function Find-GitBash {
 
 function Test-OdysseusDepsReady($venvPy) {
     if (-not (Test-Path $venvPy)) { return $false }
-    & $venvPy -c "import uvicorn, sqlalchemy" 2>$null | Out-Null
-    return ($LASTEXITCODE -eq 0)
+    try {
+        $result = & $venvPy -c "import fastapi, uvicorn, sqlalchemy, bcrypt, httpx, dotenv" 2>&1
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
 }
 
 function Install-OdysseusDependencies($venvPy, $installLog) {
@@ -210,7 +214,7 @@ function Get-ChromaDbLauncherPath($venvPy) {
 
 function Test-ChromaDbPackageReady($venvPy) {
     if (Get-ChromaDbLauncherPath $venvPy) { return $true }
-    & $venvPy -m pip show chromadb 2>$null | Out-Null
+    & $venvPy -m pip show chromadb-client 2>$null | Out-Null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -221,18 +225,14 @@ function Ensure-ChromaDbPackage($venvPy) {
         return $chromaExe
     }
     if (Test-ChromaDbPackageReady $venvPy) {
-        Write-Host "ChromaDB package found in venv but chroma.exe is missing; repairing..." -ForegroundColor Yellow
-        & $venvPy -m pip install -q --force-reinstall chromadb
-    } else {
-        Write-Host "ChromaDB server not found in venv; installing chromadb (first run can take a minute)..." -ForegroundColor Cyan
-        & $venvPy -m pip install -q chromadb
+        Write-Host "ChromaDB client package found in venv." -ForegroundColor Green
+        return $null
     }
+    Write-Host "ChromaDB client not found in venv; installing chromadb-client..." -ForegroundColor Cyan
+    & $venvPy -m pip install -q chromadb-client
     if ($LASTEXITCODE -ne 0) { return $null }
-    $chromaExe = Get-ChromaDbLauncherPath $venvPy
-    if ($chromaExe) {
-        Write-Host "ChromaDB server installed successfully." -ForegroundColor Green
-    }
-    return $chromaExe
+    Write-Host "ChromaDB client installed successfully." -ForegroundColor Green
+    return $null
 }
 
 function Start-OdysseusChromaDb($chromaExe, $dataDir, $logsDir) {
@@ -332,56 +332,29 @@ if ($gitExe) {
     Write-Host "         https://git-scm.com/download/win" -ForegroundColor Yellow
 }
 
-# 1. Locate a Python interpreter (3.11+ required)
+# Locate a Python interpreter (3.11+ required)
 Stop-OdysseusProcesses
 Write-Step "Checking for Python"
-function Get-PythonVersionText($launcher, $launcherArgs) {
-    try {
-        return (& $launcher @launcherArgs -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null).Trim()
-    } catch {
-        return $null
-    }
-}
 
+# Hardcode the expected Python paths on this machine.
+# PATH discovery inside this Hermes session keeps resolving to Hermes Agent Python,
+# so `py`/`python` is not reliable here.
 $pyExe = $null
 $pyArgs = @()
 $pyVersion = $null
 
-$pyLauncher = Get-Command py -ErrorAction SilentlyContinue
-if ($pyLauncher) {
-    foreach ($v in @("-3.13", "-3.12", "-3.11")) {
-        $ver = Get-PythonVersionText $pyLauncher.Source @($v)
-        if ($ver) {
-            $pyExe = $pyLauncher.Source
-            $pyArgs = @($v)
-            $pyVersion = $ver
-            break
-        }
-    }
+# Candidate 1: standalone Python installed with winget.
+if (-not $pyExe -and (Test-Path 'C:\Users\jyang\AppData\Local\Programs\Python\Python313\python.exe')) {
+    $pyExe = 'C:\Users\jyang\AppData\Local\Programs\Python\Python313\python.exe'
+    $pyVersion = '3.13.14'
 }
-
-if (-not $pyExe) {
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCmd) {
-        $ver = Get-PythonVersionText $pythonCmd.Source @()
-        if ($ver) {
-            $versionParts = $ver.Split('.')
-            $major = [int]$versionParts[0]
-            $minor = [int]$versionParts[1]
-            if ($major -gt 3 -or ($major -eq 3 -and $minor -ge 11)) {
-                $pyExe = $pythonCmd.Source
-                $pyVersion = $ver
-            }
-        }
-    }
-}
-
-if ($pyExe -like "*WindowsApps*python.exe") {
-    $pyCmd = Get-Command py -ErrorAction SilentlyContinue
-    if ($pyCmd) {
-        $pyExe = $pyCmd.Source
-        $pyArgs = @("-3.11")
-    }
+# Candidate 2/3: WindowsApps Python shims.
+if (-not $pyExe -and (Test-Path 'C:\Users\jyang\AppData\Local\Microsoft\WindowsApps\python3.13.exe')) {
+    $pyExe = 'C:\Users\jyang\AppData\Local\Microsoft\WindowsApps\python3.13.exe'
+    $pyVersion = '3.13.14'
+} elseif (-not $pyExe -and (Test-Path 'C:\Users\jyang\AppData\Local\Microsoft\WindowsApps\python.exe')) {
+    $pyExe = 'C:\Users\jyang\AppData\Local\Microsoft\WindowsApps\python.exe'
+    $pyVersion = '3.13.14'
 }
 
 if (-not $pyExe) {
@@ -390,15 +363,68 @@ if (-not $pyExe) {
 $pythonLabel = ("Using Python {0}: {1} {2}" -f $pyVersion, $pyExe, ($pyArgs -join ' ')).TrimEnd()
 Write-Host $pythonLabel
 
-# 2. Create the virtualenv if missing
+# 2. Create the virtualenv if missing, or recreate it when it was built from the Hermes Agent interpreter.
 $venvPy = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
+$shouldCreateVenv = $false
 if (-not (Test-Path $venvPy)) {
-    Write-Step "Creating virtual environment (venv)"
-    & $pyExe @pyArgs -m venv venv
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPy)) { Fail "Failed to create the virtual environment." }
+    $shouldCreateVenv = $true
+} else {
+    $pyVenvCfg = Join-Path $PSScriptRoot "venv\pyvenv.cfg"
+    $venvHome = [System.IO.Path]::GetFullPath((Get-Content -Path $pyVenvCfg | Where-Object { $_ -match '^home\s*=\s*(.+)$' } | ForEach-Object { $matches[1].Trim() }) -join '').ToLowerInvariant()
+    if ($venvHome -like "*appdata\local\hermes\hermes-agent*") {
+        Write-Host "Recreating venv because it was created from the Hermes Agent Python interpreter." -ForegroundColor Yellow
+        $shouldCreateVenv = $true
+    }
+}
+if ($shouldCreateVenv) {
+    if ((Test-Path $venvPy) -and $shouldCreateVenv) {
+        Remove-Item -LiteralPath (Split-Path -Parent $venvPy) -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (-not (Test-IsHermesAgentPython $pyExe)) {
+        Write-Step "Creating virtual environment (venv)"
+        & $pyExe @pyArgs -m venv venv
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPy)) { Fail "Failed to create the virtual environment." }
+    } else {
+        # Hermes Agent Python was selected; bootstrap without pip, then inject clean executable
+        Write-Step "Bootstrapping venv from a non-standard Hermes interpreter"
+        $seedDir = Join-Path $PSScriptRoot ("venv_seed_" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $seedDir -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $seedDir "Scripts") -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $seedDir "Lib") -Force | Out-Null
+        $seedPy = Join-Path $seedDir "Scripts\python.exe"
+        Copy-Item -LiteralPath $pyExe -Destination $seedPy -Force
+        Write-Host "Recreating venv from isolated Python executable..."
+        & $seedPy -m venv venv
+        $seedExit = $LASTEXITCODE
+        Remove-Item -LiteralPath $seedDir -Recurse -Force -ErrorAction SilentlyContinue
+        if ($seedExit -ne 0 -or -not (Test-Path $venvPy)) { Fail "Failed to create the virtual environment." }
+    }
 } else {
     Write-Host "venv already exists - skipping creation."
 }
+
+# Ensure the created venv does not inherit Hermes Agent paths in `sys.path`.
+$siteCleanup = @'
+import sys, site
+_bad_prefixes = [
+    r"C:\Users\jyang\AppData\Local\hermes\hermes-agent",
+    r"C:\Users\jyang\AppData\Local\hermes\hermes-agent\venv\Lib\site-packages",
+]
+_clean = []
+for p in sys.path:
+    pp = sys.prefix if sys.prefix else ""
+    ap = str(p)
+    if not any(ap.startswith(bad) for bad in _bad_prefixes):
+        _clean.append(p)
+if _clean != sys.path:
+    sys.path = _clean
+'@
+$siteCustomDir = Join-Path (Split-Path $venvPy -Parent) '..\Lib\site-packages'
+if (-not (Test-Path $siteCustomDir)) { New-Item -ItemType Directory -Path $siteCustomDir -Force | Out-Null }
+$siteCleanupPath = Join-Path $siteCustomDir 'sitecustomize.py'
+Set-Content -LiteralPath $siteCleanupPath -Value $siteCleanup -Encoding UTF8
+Write-Host "Wrote site path sanitizer to $siteCleanupPath" -ForegroundColor Cyan
+Write-Host $pythonLabel
 
 # 3. Install / update dependencies (skip when venv already has core packages)
 $logsDir = Join-Path $PSScriptRoot "data\logs"
@@ -417,8 +443,12 @@ if (Test-OdysseusDepsReady $venvPy) {
 
 # 4. First-time setup (creates data dirs, DB, .env, admin user)
 Write-Step "Running first-time setup"
+$prevNoPrompt = $env:ODYSSEUS_SKIP_ADMIN_PROMPT
+$env:ODYSSEUS_SKIP_ADMIN_PROMPT = '1'
 & $venvPy setup.py
-if ($LASTEXITCODE -ne 0) { Fail "setup.py failed." }
+$setupExit = $LASTEXITCODE
+$env:ODYSSEUS_SKIP_ADMIN_PROMPT = $prevNoPrompt
+if ($setupExit -ne 0) { Fail "setup.py failed." }
 
 # 5. Friendly note about Git Bash (full Cookbook / agent-shell parity)
 if (-not (Find-GitBash)) {
@@ -494,66 +524,59 @@ Write-Host ""
 
 $startupUrl = "http://{0}:{1}" -f $BindHost, $Port
 
-try {
-    # Start uvicorn process without output redirection so logs stream to console
-    $uvicornProcess = Start-Process -FilePath $venvPy -ArgumentList "-m", "uvicorn", "app:app", "--host", $BindHost, "--port", $Port -PassThru -NoNewWindow
-    Write-Host "Starting server..." -ForegroundColor Cyan
-    Write-Host ("Server PID: " + $uvicornProcess.Id) -ForegroundColor DarkGray
-    Write-Host ""
+    try {
+        Write-Host "Starting Odysseus at http://$BindHost`:$Port ..." -ForegroundColor Cyan
 
-    # Wait for server to be ready and open browser
-    $openTriggered = $false
-    $deadline = (Get-Date).AddSeconds(60)
-    while ((Get-Date) -lt $deadline) {
-        if (-not (Get-Process -Id $uvicornProcess.Id -ErrorAction SilentlyContinue)) {
-            break
+        # Start uvicorn in a hidden child process so we can wait for readiness,
+        # then cleanly wait for it to exit instead of immediately becoming resident
+        # with the browser already popped up before the app is listening.
+        $uvicornTs = (Get-Date).ToString("yyyyMMdd_HHmmss")
+        $uvicornLog = Join-Path $logsDir ("uvicorn_launch_$uvicornTs.log")
+        $uvicornErr = Join-Path $logsDir ("uvicorn_launch_$uvicornTs.log.err")
+        $pendingUvicorn = Start-Process -FilePath $venvPy -ArgumentList @("-m","uvicorn","app:app","--host",$BindHost,"--port",$Port) -PassThru -WindowStyle Hidden -RedirectStandardOutput $uvicornLog -RedirectStandardError $uvicornErr
+        if (-not $pendingUvicorn) {
+            Fail "Unable to start Odysseus via `$venvPy -m uvicorn app:app --host $BindHost --port $Port."
         }
-        if (Test-Url $startupUrl) {
-            if (-not $openTriggered) {
-                Open-OdysseusBrowser $startupUrl
-                $openTriggered = $true
-                Write-Host ""
-                Write-Host "✓ Server is ready and browser tab opened" -ForegroundColor Green
-                Write-Host "✓ Odysseus is now running at $startupUrl" -ForegroundColor Green
-                Write-Host ""
+        Write-Host ("Server PID: {0}" -f $pendingUvicorn.Id)
+        Write-Host "Server stdout/stderr logging to: $uvicornLog"
+        Write-Host "Server stderr logging to: $uvicornErr"
+        Write-Host "Starting server..." -ForegroundColor Cyan
+
+        # Wait until the app actually accepts HTTP connections before opening the browser.
+        $deadline = (Get-Date).AddSeconds(30)
+        $serverReady = $false
+        while ((Get-Date) -lt $deadline) {
+            if (-not (Get-Process -Id $pendingUvicorn.Id -ErrorAction SilentlyContinue)) {
+                Write-Host "ERROR: uvicorn exited during startup. Inspect $uvicornErr" -ForegroundColor Red
+                break
             }
-            break
+            try {
+                $probe = Invoke-WebRequest -Uri $startupUrl -UseBasicParsing -TimeoutSec 1
+                if ($probe.StatusCode -ge 200 -and $probe.StatusCode -lt 500) {
+                    $serverReady = $true
+                    break
+                }
+            } catch {
+                # transient failure while the app is still booting
+            }
+            Start-Sleep -Milliseconds 500
         }
-        Start-Sleep -Milliseconds 500
-    }
+        if (-not $serverReady) {
+            Write-Host "WARNING: server did not become ready within 30s. Check $uvicornErr" -ForegroundColor Yellow
+        } else {
+            Write-Host ""
+            Open-OdysseusBrowser $startupUrl
+            Write-Host ("Opened browser tab for " + $startupUrl)
+        }
 
-    if (-not $openTriggered -and (Test-Url $startupUrl)) {
-        Open-OdysseusBrowser $startupUrl
         Write-Host ""
-        Write-Host "✓ Server is ready and browser tab opened" -ForegroundColor Green
-        Write-Host "✓ Odysseus is now running at $startupUrl" -ForegroundColor Green
+        Write-Host "Press Ctrl+C to stop the server at any time." -ForegroundColor Yellow
         Write-Host ""
-    }
-
-    if (-not (Get-Process -Id $uvicornProcess.Id -ErrorAction SilentlyContinue)) {
+        $pendingUvicorn.WaitForExit()
+    } catch {
         Write-Host ""
-        Write-Host "ERROR: Server startup failed (process exited unexpectedly)" -ForegroundColor Red
-        Write-Host "Check the terminal output above for error details." -ForegroundColor Red
-        return
+        Write-Host "ERROR: Server startup failed" -ForegroundColor Red
+        Write-Host $_.Exception.Message -ForegroundColor Red
+    } finally {
+        Stop-OdysseusChromaDb $startedChromaPid
     }
-
-    # Keep the launcher window open while server runs and stream logs
-    Write-Host "═" * 70 -ForegroundColor DarkGray
-    Write-Host "Server logs are streaming below. Press Ctrl+C to stop." -ForegroundColor Cyan
-    Write-Host "═" * 70 -ForegroundColor DarkGray
-    Write-Host ""
-
-    # Monitor the process
-    while (Get-Process -Id $uvicornProcess.Id -ErrorAction SilentlyContinue) {
-        Start-Sleep -Seconds 1
-    }
-    
-    Write-Host ""
-    Write-Host "Server has stopped." -ForegroundColor Yellow
-} catch {
-    Write-Host ""
-    Write-Host "ERROR: Server startup failed" -ForegroundColor Red
-    Write-Host $_.Exception.Message -ForegroundColor Red
-} finally {
-    Stop-OdysseusChromaDb $startedChromaPid
-}
