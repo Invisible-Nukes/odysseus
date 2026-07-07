@@ -105,6 +105,14 @@ function Stop-OdysseusProcesses {
     Start-Sleep -Milliseconds 500
 }
 
+function Test-IsHermesAgentPython($pyExe) {
+    if (-not $pyExe) { return $false }
+    $resolved = $null
+    try { $resolved = (Resolve-Path -Path $pyExe -ErrorAction Stop).Path } catch { return $false }
+    $homeMarker = Join-Path $env:LOCALAPPDATA 'hermes\hermes-agent'
+    return $resolved.ToLowerInvariant().Contains($homeMarker.ToLowerInvariant())
+}
+
 function Test-WindowsBashStub($path) {
     if (-not $path) { return $false }
     $lowered = $path.ToLowerInvariant()
@@ -147,6 +155,52 @@ function Test-OdysseusDepsReady($venvPy) {
     }
 }
 
+function Invoke-PipMirrorFallback($stepLabel, $installLog, $venvPy, $stepArgs, [ref]$mirrorFallbackUsed) {
+    if ($mirrorFallbackUsed.Value -or $env:ODYSSEUS_PIP_MIRROR) {
+        return $false
+    }
+
+    $tail = @()
+    if (Test-Path $installLog) {
+        $tail = Get-Content -Path $installLog -Tail 30 -ErrorAction SilentlyContinue
+    }
+    $tailText = ($tail -join "`n")
+    if ($tailText -notmatch "ConnectionResetError|10054|retryable network reset") {
+        return $false
+    }
+
+    $script:prevUserPipEnv.PIP_INDEX_URL       = $env:PIP_INDEX_URL
+    $script:prevUserPipEnv.PIP_EXTRA_INDEX_URL = $env:PIP_EXTRA_INDEX_URL
+    $env:PIP_INDEX_URL       = "https://pypi.tuna.tsinghua.edu.cn/simple"
+    $env:PIP_EXTRA_INDEX_URL = $null
+    $mirrorFallbackUsed.Value = $true
+
+    Write-Host ("[MIRROR-FALLBACK] PyPI ConnectionResetError/10054 detected; switched PIP_INDEX_URL to Tsinghua mirror and cleared PIP_EXTRA_INDEX_URL; retrying {0}..." -f $stepLabel) -ForegroundColor Yellow
+
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $venvPy @($stepArgs) *> $installLog
+    $mirrorExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+
+    $env:PIP_INDEX_URL       = $script:prevUserPipEnv.PIP_INDEX_URL
+    $env:PIP_EXTRA_INDEX_URL = $script:prevUserPipEnv.PIP_EXTRA_INDEX_URL
+
+    if ($mirrorExit -eq 0) {
+        $LASTEXITCODE = 0
+        Write-Host ("[MIRROR-FALLBACK] {0} succeeded against mirror." -f $stepLabel) -ForegroundColor Green
+        return $true
+    }
+
+    Write-Host ("[MIRROR-FALLBACK] {0} failed against mirror. Last lines from {1}:" -f $stepLabel, $installLog) -ForegroundColor Red
+    $tail = @()
+    if (Test-Path $installLog) {
+        $tail = Get-Content -Path $installLog -Tail 30 -ErrorAction SilentlyContinue
+    }
+    $tail | ForEach-Object { Write-Host $_ }
+    return $false
+}
+
 function Install-OdysseusDependencies($venvPy, $installLog) {
     $pipArgs = @("-m", "pip", "install", "--retries", "5", "--timeout", "120")
     $attempts = @(
@@ -155,37 +209,82 @@ function Install-OdysseusDependencies($venvPy, $installLog) {
     )
 
     foreach ($step in $attempts) {
+        $stepExitCode = 0
         $maxTries = 3
+        $mirrorFallbackUsed = $false
         for ($try = 1; $try -le $maxTries; $try++) {
             Write-Host ("  {0} (attempt {1}/{2})..." -f $step.Label, $try, $maxTries)
             $prevEap = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             & $venvPy @($step.Args) *> $installLog
-            $exitCode = $LASTEXITCODE
+            $stepExitCode = $LASTEXITCODE
             $ErrorActionPreference = $prevEap
 
-            if ($exitCode -eq 0) { break }
+            if ($stepExitCode -eq 0) { $LASTEXITCODE = 0; break }
+
+            Write-Host ("[DIAG] attempt result: step={0} try={1}/{2} exitCode={3}" -f $step.Label, $try, $maxTries, $stepExitCode) -ForegroundColor DarkGray
 
             $tail = @()
             if (Test-Path $installLog) {
                 $tail = Get-Content -Path $installLog -Tail 30 -ErrorAction SilentlyContinue
             }
             $tailText = ($tail -join "`n")
-            $cacheCorrupt = $tailText -match "IncompleteRead|Connection broken|ContentDecodingError|hash mismatch"
+            $cacheCorrupt = $tailText -match "IncompleteRead|Connection broken|ConnectionResetError|10054|ContentDecodingError|hash mismatch"
+            Write-Host ("[DIAG] cacheCorrupt={0}" -f $cacheCorrupt) -ForegroundColor DarkGray
 
             if ($cacheCorrupt -and $try -lt $maxTries) {
+                Write-Host ("[DIAG] action=purge-and-retry step={0} try={1} reason=cacheCorrupt" -f $step.Label, $try) -ForegroundColor Yellow
                 Write-Host "  pip hit a corrupted download/cache entry; purging pip cache and retrying..." -ForegroundColor Yellow
-                & $venvPy -m pip cache purge *> $null
+                try { & $venvPy -m pip cache purge 2>$null } catch {}
                 Start-Sleep -Seconds 2
                 continue
             }
 
             Write-Host ("  {0} failed. Last lines from {1}:" -f $step.Label, $installLog) -ForegroundColor Red
             $tail | ForEach-Object { Write-Host $_ }
+
+            Write-Host ("[FINAL DIAG] step={0} all-retries-exhausted-or-nonretryable-fail" -f $step.Label) -ForegroundColor Red
+            Write-Host ("[FINAL DIAG] SSL_CERT_FILE={0} PIP_CERT={1} PIP_INDEX_URL={2} PIP_EXTRA_INDEX_URL={3}" -f $env:SSL_CERT_FILE, $env:PIP_CERT, $env:PIP_INDEX_URL, $env:PIP_EXTRA_INDEX_URL) -ForegroundColor Red
+            if (Test-Path -LiteralPath $venvPy -ErrorAction SilentlyContinue) {
+                try {
+                    $pyVerOut = & $venvPy --version 2>&1
+                    Write-Host ("[FINAL DIAG] venv python={0}" -f ($pyVerOut -join ' ')) -ForegroundColor Red
+                    $certTlsOut = & $venvPy -c "import ssl, platform, sys; print('openssl=' + str(getattr(ssl, 'OPENSSL_VERSION', ''))); print('platform=' + platform.platform()); print('py=' + sys.version)" 2>&1
+                    Write-Host ("[FINAL DIAG] python ssl/platform={0}" -f ($certTlsOut -join "`n")) -ForegroundColor Red
+                } catch {
+                    Write-Host "[FINAL DIAG] python version probe failed" -ForegroundColor Red
+                }
+            } else {
+                Write-Host "[FINAL DIAG] venv python=<missing>" -ForegroundColor Red
+            }
+
+            if ($try -ge $maxTries) {
+                break
+            }
             Fail "Dependency install failed during $($step.Label). Inspect $installLog for details."
         }
-        if ($LASTEXITCODE -ne 0) {
-            Fail "Dependency install failed during $($step.Label). Inspect $installLog for details."
+        if ($stepExitCode -ne 0) {
+            Write-Host ("[FINAL DIAG] step={0} all-retries-exhausted" -f $step.Label) -ForegroundColor Red
+            Write-Host ("[FINAL DIAG] SSL_CERT_FILE={0} PIP_CERT={1} PIP_INDEX_URL={2} PIP_EXTRA_INDEX_URL={3}" -f $env:SSL_CERT_FILE, $env:PIP_CERT, $env:PIP_INDEX_URL, $env:PIP_EXTRA_INDEX_URL) -ForegroundColor Red
+            if (Test-Path -LiteralPath $venvPy -ErrorAction SilentlyContinue) {
+                try {
+                    $pyVerOut = & $venvPy --version 2>&1
+                    Write-Host ("[FINAL DIAG] venv python={0}" -f ($pyVerOut -join ' ')) -ForegroundColor Red
+                    $certTlsOut = & $venvPy -c "import ssl, platform, sys; print('openssl=' + str(getattr(ssl, 'OPENSSL_VERSION', ''))); print('platform=' + platform.platform()); print('py=' + sys.version)" 2>&1
+                    Write-Host ("[FINAL DIAG] python ssl/platform={0}" -f ($certTlsOut -join "`n")) -ForegroundColor Red
+                } catch {
+                    Write-Host "[FINAL DIAG] python version probe failed" -ForegroundColor Red
+                }
+            } else {
+                Write-Host "[FINAL DIAG] venv python=<missing>" -ForegroundColor Red
+            }
+
+            if (-not (Invoke-PipMirrorFallback -stepLabel $step.Label -installLog $installLog -venvPy $venvPy -stepArgs $step.Args -mirrorFallbackUsed ([ref]$mirrorFallbackUsed))) {
+                $stepExitCode = $LASTEXITCODE
+                if ($stepExitCode -ne 0) {
+                    Fail "Dependency install failed during $($step.Label). Inspect $installLog for details."
+                }
+            }
         }
     }
 }
@@ -405,7 +504,9 @@ if ($shouldCreateVenv) {
 
 # Ensure the created venv does not inherit Hermes Agent paths in `sys.path`.
 $siteCleanup = @'
-import sys, site
+
+import sys
+
 _bad_prefixes = [
     r"C:\Users\jyang\AppData\Local\hermes\hermes-agent",
     r"C:\Users\jyang\AppData\Local\hermes\hermes-agent\venv\Lib\site-packages",
@@ -426,6 +527,17 @@ Set-Content -LiteralPath $siteCleanupPath -Value $siteCleanup -Encoding UTF8
 Write-Host "Wrote site path sanitizer to $siteCleanupPath" -ForegroundColor Cyan
 Write-Host $pythonLabel
 
+function Reset-PipTlsEnv($venvPy) {
+    $certifiCacert = Join-Path (Join-Path (Split-Path $venvPy -Parent) 'Lib\site-packages\certifi') 'cacert.pem'
+    if (Test-Path -LiteralPath $certifiCacert -ErrorAction SilentlyContinue) {
+        $env:SSL_CERT_FILE = $certifiCacert
+        $env:PIP_CERT      = $certifiCacert
+    } else {
+        $env:SSL_CERT_FILE = $null
+        $env:PIP_CERT      = $null
+    }
+}
+
 # 3. Install / update dependencies (skip when venv already has core packages)
 $logsDir = Join-Path $PSScriptRoot "data\logs"
 if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
@@ -437,7 +549,53 @@ if (Test-OdysseusDepsReady $venvPy) {
 } else {
     Write-Step "Installing dependencies (first run can take a few minutes)"
     Write-Host "Installing Python packages; logging to $installLog"
-    Install-OdysseusDependencies $venvPy $installLog
+
+    # Fix C: pre-install TLS/CA env sanitization to avoid broken user/system
+    # pip/SSL settings poisoning venv installs.
+    $script:prevUserPipEnv = @{
+        PIP_INDEX_URL        = $env:PIP_INDEX_URL
+        PIP_EXTRA_INDEX_URL  = $env:PIP_EXTRA_INDEX_URL
+        SSL_CERT_FILE        = $env:SSL_CERT_FILE
+        PIP_CERT             = $env:PIP_CERT
+    }
+    $env:PIP_INDEX_URL        = $null
+    $env:PIP_EXTRA_INDEX_URL  = $null
+    $env:SSL_CERT_FILE        = $null
+    $env:PIP_CERT             = $null
+
+    Reset-PipTlsEnv $venvPy
+
+    # On this host, public PyPI deterministically resets Python TLS with 10054.
+    # Default to a working mirror unless the user explicitly overrides it.
+    if (-not $env:ODYSSEUS_PIP_MIRROR) {
+        $env:ODYSSEUS_PIP_MIRROR = 'https://pypi.tuna.tsinghua.edu.cn/simple'
+    }
+    if ($env:ODYSSEUS_PIP_MIRROR) {
+        $env:PIP_INDEX_URL = $env:ODYSSEUS_PIP_MIRROR
+        Write-Host ("Using ODYSSEUS_PIP_MIRROR as PIP_INDEX_URL={0}" -f $env:ODYSSEUS_PIP_MIRROR) -ForegroundColor Cyan
+    }
+    try {
+        Install-OdysseusDependencies $venvPy $installLog
+    } finally {
+        # Restore user env regardless of success/failure.
+        $env:PIP_INDEX_URL        = $script:prevUserPipEnv.PIP_INDEX_URL
+        $env:PIP_EXTRA_INDEX_URL  = $script:prevUserPipEnv.PIP_EXTRA_INDEX_URL
+
+        # Restore SSL_CERT_FILE/PIP_CERT to venv certifi path if present, otherwise clear.
+        Reset-PipTlsEnv $venvPy
+    }
+    if (-not (Test-OdysseusDepsReady $venvPy)) {
+        Write-Host ""
+        Write-Host ("ERROR: pip reported success, but core dependencies are not importable in the venv.") -ForegroundColor Red
+        Write-Host ("Tail of $($installLog):") -ForegroundColor Red
+        $tail = @()
+        if (Test-Path $installLog) {
+            $tail = Get-Content -Path $installLog -Tail 30 -ErrorAction SilentlyContinue
+        }
+        $tail | ForEach-Object { Write-Host $_ }
+        Write-Host ""
+        Fail "Dependency install reported success, but post-install verification failed."
+    }
     Write-Host ("Dependencies installed successfully (log: " + $installLog + ")") -ForegroundColor Green
 }
 
@@ -522,61 +680,63 @@ Write-Host ""
 Write-Host "Press Ctrl+C to stop the server at any time." -ForegroundColor Yellow
 Write-Host ""
 
-$startupUrl = "http://{0}:{1}" -f $BindHost, $Port
+try {
+    Write-Host "Starting Odysseus at http://$BindHost`:$Port ..." -ForegroundColor Cyan
 
-    try {
-        Write-Host "Starting Odysseus at http://$BindHost`:$Port ..." -ForegroundColor Cyan
+    # Run uvicorn in a child process so we can wait for readiness,
+    # capture output, and keep this PowerShell window resident until
+    # the server exits or you stop it.
+    $consoleLog = Join-Path $logsDir "uvicorn_console.log"
+    $consoleErr = Join-Path $logsDir "uvicorn_console.log.err"
+    $pendingUvicorn = Start-Process -FilePath $venvPy -ArgumentList @("-m","uvicorn","app:app","--host",$BindHost,"--port",$Port) -PassThru -WindowStyle Hidden -RedirectStandardOutput $consoleLog -RedirectStandardError $consoleErr
+    if (-not $pendingUvicorn) {
+        Fail "Unable to start Odysseus via `$venvPy -m uvicorn app:app --host $BindHost --port $Port."
+    }
+    Write-Host ("Server PID: {0}" -f $pendingUvicorn.Id)
+    Write-Host ("Server stdout logging to: " + $consoleLog)
+    Write-Host ("Server stderr logging to: " + $consoleErr)
+    Write-Host "Starting server..." -ForegroundColor Cyan
 
-        # Start uvicorn in a hidden child process so we can wait for readiness,
-        # then cleanly wait for it to exit instead of immediately becoming resident
-        # with the browser already popped up before the app is listening.
-        $uvicornTs = (Get-Date).ToString("yyyyMMdd_HHmmss")
-        $uvicornLog = Join-Path $logsDir ("uvicorn_launch_$uvicornTs.log")
-        $uvicornErr = Join-Path $logsDir ("uvicorn_launch_$uvicornTs.log.err")
-        $pendingUvicorn = Start-Process -FilePath $venvPy -ArgumentList @("-m","uvicorn","app:app","--host",$BindHost,"--port",$Port) -PassThru -WindowStyle Hidden -RedirectStandardOutput $uvicornLog -RedirectStandardError $uvicornErr
-        if (-not $pendingUvicorn) {
-            Fail "Unable to start Odysseus via `$venvPy -m uvicorn app:app --host $BindHost --port $Port."
+    # Wait until the app actually accepts HTTP connections before opening the browser.
+    $deadline = (Get-Date).AddSeconds(30)
+    $serverReady = $false
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-Process -Id $pendingUvicorn.Id -ErrorAction SilentlyContinue)) {
+            Write-Host "ERROR: uvicorn exited during startup. Inspect $consoleErr" -ForegroundColor Red
+            break
         }
-        Write-Host ("Server PID: {0}" -f $pendingUvicorn.Id)
-        Write-Host "Server stdout/stderr logging to: $uvicornLog"
-        Write-Host "Server stderr logging to: $uvicornErr"
-        Write-Host "Starting server..." -ForegroundColor Cyan
-
-        # Wait until the app actually accepts HTTP connections before opening the browser.
-        $deadline = (Get-Date).AddSeconds(30)
-        $serverReady = $false
-        while ((Get-Date) -lt $deadline) {
-            if (-not (Get-Process -Id $pendingUvicorn.Id -ErrorAction SilentlyContinue)) {
-                Write-Host "ERROR: uvicorn exited during startup. Inspect $uvicornErr" -ForegroundColor Red
+        try {
+            $probe = Invoke-WebRequest -Uri $startupUrl -UseBasicParsing -TimeoutSec 1
+            if ($probe.StatusCode -ge 200 -and $probe.StatusCode -lt 500) {
+                $serverReady = $true
                 break
             }
-            try {
-                $probe = Invoke-WebRequest -Uri $startupUrl -UseBasicParsing -TimeoutSec 1
-                if ($probe.StatusCode -ge 200 -and $probe.StatusCode -lt 500) {
-                    $serverReady = $true
-                    break
-                }
-            } catch {
-                # transient failure while the app is still booting
-            }
-            Start-Sleep -Milliseconds 500
+        } catch {
+            # transient failure while the app is still booting
         }
-        if (-not $serverReady) {
-            Write-Host "WARNING: server did not become ready within 30s. Check $uvicornErr" -ForegroundColor Yellow
-        } else {
-            Write-Host ""
-            Open-OdysseusBrowser $startupUrl
-            Write-Host ("Opened browser tab for " + $startupUrl)
-        }
-
-        Write-Host ""
-        Write-Host "Press Ctrl+C to stop the server at any time." -ForegroundColor Yellow
-        Write-Host ""
-        $pendingUvicorn.WaitForExit()
-    } catch {
-        Write-Host ""
-        Write-Host "ERROR: Server startup failed" -ForegroundColor Red
-        Write-Host $_.Exception.Message -ForegroundColor Red
-    } finally {
-        Stop-OdysseusChromaDb $startedChromaPid
+        Start-Sleep -Milliseconds 500
     }
+    if (-not $serverReady) {
+        Write-Host "WARNING: server did not become ready within 30s. Check $consoleErr" -ForegroundColor Yellow
+    } else {
+        Write-Host ""
+        Open-OdysseusBrowser $startupUrl
+        Write-Host ("Opened browser tab for " + $startupUrl)
+    }
+
+    Write-Host ""
+    Write-Host "Press Ctrl+C to stop the server at any time." -ForegroundColor Yellow
+    Write-Host ""
+
+    $pendingUvicorn.WaitForExit()
+
+    Write-Host ""
+    Write-Host "Uvicorn exited. Close this window or press Enter to exit." -ForegroundColor Yellow
+    Read-Host
+} catch {
+    Write-Host ""
+    Write-Host "ERROR: Server startup failed" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+} finally {
+    Stop-OdysseusChromaDb $startedChromaPid
+}
