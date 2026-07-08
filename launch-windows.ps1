@@ -681,28 +681,36 @@ Write-Host "Press Ctrl+C to stop the server at any time." -ForegroundColor Yello
 Write-Host ""
 
 try {
-    Write-Host "Starting Odysseus at http://$BindHost`:$Port ..." -ForegroundColor Cyan
+    $startupUrl = "http://{0}:{1}" -f $BindHost, $Port
+    Write-Host "Starting Odysseus at $startupUrl ..." -ForegroundColor Cyan
 
-    # Run uvicorn in a child process so we can wait for readiness,
-    # capture output, and keep this PowerShell window resident until
-    # the server exits or you stop it.
+    # Launch uvicorn via cmd /c start so it is fully DETACHED from this
+    # launcher's process tree. On double-click .bat the wrapper kills the
+    # direct child on exit; a cmd-started process survives window close.
+    # Correct `start` syntax: empty title placeholder, then quoted exe, then args.
     $consoleLog = Join-Path $logsDir "uvicorn_console.log"
-    $consoleErr = Join-Path $logsDir "uvicorn_console.log.err"
-    $pendingUvicorn = Start-Process -FilePath $venvPy -ArgumentList @("-m","uvicorn","app:app","--host",$BindHost,"--port",$Port) -PassThru -WindowStyle Hidden -RedirectStandardOutput $consoleLog -RedirectStandardError $consoleErr
+    $uvArgs = "-m uvicorn app:app --host $BindHost --port $Port"
+    $cmdArgs = '/c start "" "{0}" {1}' -f $venvPy, $uvArgs
+    $null = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -WindowStyle Hidden -PassThru
+
+    # Discover the spawned uvicorn PID for readiness probing + later cleanup.
+    Start-Sleep -Seconds 2
+    $pendingUvicorn = Get-CimInstance Win32_Process | Where-Object {
+        $_.CommandLine -match "uvicorn" -and $_.CommandLine -match "app:app"
+    } | Sort-Object { $_.ProcessId } | Select-Object -First 1
     if (-not $pendingUvicorn) {
-        Fail "Unable to start Odysseus via `$venvPy -m uvicorn app:app --host $BindHost --port $Port."
+        Fail "Unable to start Odysseus via uvicorn (app:app)."
     }
-    Write-Host ("Server PID: {0}" -f $pendingUvicorn.Id)
-    Write-Host ("Server stdout logging to: " + $consoleLog)
-    Write-Host ("Server stderr logging to: " + $consoleErr)
+    Write-Host ("Server PID: {0}" -f $pendingUvicorn.ProcessId)
+    Write-Host ("Server logging to: " + $consoleLog)
     Write-Host "Starting server..." -ForegroundColor Cyan
 
     # Wait until the app actually accepts HTTP connections before opening the browser.
     $deadline = (Get-Date).AddSeconds(30)
     $serverReady = $false
     while ((Get-Date) -lt $deadline) {
-        if (-not (Get-Process -Id $pendingUvicorn.Id -ErrorAction SilentlyContinue)) {
-            Write-Host "ERROR: uvicorn exited during startup. Inspect $consoleErr" -ForegroundColor Red
+        if (-not (Get-Process -Id $pendingUvicorn.ProcessId -ErrorAction SilentlyContinue)) {
+            Write-Host "ERROR: uvicorn exited during startup. Inspect $consoleLog" -ForegroundColor Red
             break
         }
         try {
@@ -717,7 +725,7 @@ try {
         Start-Sleep -Milliseconds 500
     }
     if (-not $serverReady) {
-        Write-Host "WARNING: server did not become ready within 30s. Check $consoleErr" -ForegroundColor Yellow
+        Write-Host "WARNING: server did not become ready within 30s. Check $consoleLog" -ForegroundColor Yellow
     } else {
         Write-Host ""
         Open-OdysseusBrowser $startupUrl
@@ -725,18 +733,22 @@ try {
     }
 
     Write-Host ""
-    Write-Host "Press Ctrl+C to stop the server at any time." -ForegroundColor Yellow
+    Write-Host "Odysseus is running in the background (PID $($pendingUvicorn.ProcessId))." -ForegroundColor Green
+    Write-Host "Close this window any time - the server keeps running." -ForegroundColor Yellow
+    Write-Host "To stop it: run reset.bat, or end the uvicorn process from Task Manager." -ForegroundColor DarkGray
     Write-Host ""
-
-    $pendingUvicorn.WaitForExit()
-
+    Write-Host "Press Enter to close this window (server stays up)." -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "Uvicorn exited. Close this window or press Enter to exit." -ForegroundColor Yellow
     Read-Host
 } catch {
     Write-Host ""
     Write-Host "ERROR: Server startup failed" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
 } finally {
+    # Only stop the server if this launcher is terminating it (Ctrl+C / crash).
+    # On a normal Read-Host close, leave uvicorn running detached.
+    if ($pendingUvicorn -and (Get-Variable -Name ctrlC -ErrorAction SilentlyContinue) -and $ctrlC) {
+        try { Stop-Process -Id $pendingUvicorn.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+    }
     Stop-OdysseusChromaDb $startedChromaPid
 }
