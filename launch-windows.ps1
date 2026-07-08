@@ -601,11 +601,24 @@ if (Test-OdysseusDepsReady $venvPy) {
 
 # 4. First-time setup (creates data dirs, DB, .env, admin user)
 Write-Step "Running first-time setup"
-$prevNoPrompt = $env:ODYSSEUS_SKIP_ADMIN_PROMPT
-$env:ODYSSEUS_SKIP_ADMIN_PROMPT = '1'
-& $venvPy setup.py
-$setupExit = $LASTEXITCODE
-$env:ODYSSEUS_SKIP_ADMIN_PROMPT = $prevNoPrompt
+$authFile = Join-Path $PSScriptRoot "data\auth.json"
+if (-not (Test-Path $authFile)) {
+    # First run: let setup.py prompt interactively for username + password
+    # (so the user sets their own admin credentials on first load-up).
+    Write-Host "First launch detected - you will be prompted to set your admin username and password." -ForegroundColor Cyan
+    $prevNoPrompt = $env:ODYSSEUS_SKIP_ADMIN_PROMPT
+    Remove-Item Env:ODYSSEUS_SKIP_ADMIN_PROMPT -ErrorAction SilentlyContinue
+    & $venvPy setup.py
+    $setupExit = $LASTEXITCODE
+    $env:ODYSSEUS_SKIP_ADMIN_PROMPT = $prevNoPrompt
+} else {
+    # Subsequent runs: skip the interactive prompt.
+    $prevNoPrompt = $env:ODYSSEUS_SKIP_ADMIN_PROMPT
+    $env:ODYSSEUS_SKIP_ADMIN_PROMPT = '1'
+    & $venvPy setup.py
+    $setupExit = $LASTEXITCODE
+    $env:ODYSSEUS_SKIP_ADMIN_PROMPT = $prevNoPrompt
+}
 if ($setupExit -ne 0) { Fail "setup.py failed." }
 
 # 5. Friendly note about Git Bash (full Cookbook / agent-shell parity)
