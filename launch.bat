@@ -17,4 +17,3 @@ echo  Press ENTER to continue, or close this window (X) to cancel.
 echo ============================================================
 pause
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0launch-windows.ps1" %*
-pause

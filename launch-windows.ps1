@@ -747,12 +747,10 @@ try {
 
     Write-Host ""
     Write-Host "Odysseus is running in the background (PID $($pendingUvicorn.ProcessId))." -ForegroundColor Green
-    Write-Host "Close this window any time - the server keeps running." -ForegroundColor Yellow
-    Write-Host "To stop it: run reset.bat, or end the uvicorn process from Task Manager." -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "Press Enter to close this window (server stays up)." -ForegroundColor Yellow
-    Write-Host ""
-    Read-Host
+    Write-Host "Server is live at $startupUrl - browser tab opened automatically." -ForegroundColor Cyan
+    Write-Host "This window will close shortly; the server keeps running." -ForegroundColor DarkGray
+    Write-Host "To stop it later: run reset.bat, or end the uvicorn process from Task Manager." -ForegroundColor DarkGray
+    Start-Sleep -Seconds 3
 } catch {
     Write-Host ""
     Write-Host "ERROR: Server startup failed" -ForegroundColor Red

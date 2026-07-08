@@ -205,15 +205,11 @@ try {
     Write-Host ("  Version: " + $verification.Version) -ForegroundColor White
     Write-Host ("  API reachable at http://127.0.0.1:11434/api/tags") -ForegroundColor White
     Write-Host ("  Installed models reported by Ollama: " + ($verification.ApiModels.Count)) -ForegroundColor White
-    Write-Host "" 
+    Write-Host ""
     Write-Host "This confirms the local Ollama setup is present and responding." -ForegroundColor Cyan
 } catch {
-    Write-Host "" 
+    Write-Host ""
     Write-Host "Verification scan did not complete cleanly: $($_.Exception.Message)" -ForegroundColor Yellow
     Write-Host "The binary was installed, but the runtime check failed. Please inspect the terminal output and rerun the setup if needed." -ForegroundColor Yellow
 }
-
-Write-Host "" 
-Write-Host "Press Enter to close this window when you are done." -ForegroundColor Yellow
-Read-Host | Out-Null
 exit 0
