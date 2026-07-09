@@ -1005,6 +1005,14 @@ def setup_cookbook_routes() -> APIRouter:
             if is_ollama_download:
                 runner_lines.append('  eval "$ODYSSEUS_OLLAMA_PULL_CMD" < /dev/null')
             else:
+                # On retry attempts, fall back to the plain (non-hf_transfer)
+                # downloader. hf_transfer is fast but has been observed to crash
+                # near the end of very large multi-file transfers; once it fails
+                # once, retrying with it enabled just re-crashes. Disabling it on
+                # retries lets the slower-but-reliable path resume cleanly from
+                # the .incomplete blobs. (Matches the documented retry contract.)
+                if not req.disable_hf_transfer:
+                    runner_lines.append('  if [ $_attempt -gt 1 ]; then export HF_HUB_ENABLE_HF_TRANSFER=0; export HF_HUB_DOWNLOAD_MAX_WORKERS=4; echo "hf_transfer failed once — retrying with plain downloader..."; fi')
                 runner_lines.append('  if command -v hf &>/dev/null; then')
                 runner_lines.append(f'    {hf_cmd} < /dev/null')
                 runner_lines.append('  elif python3 -c "import huggingface_hub" 2>/dev/null; then')
@@ -1061,6 +1069,10 @@ def setup_cookbook_routes() -> APIRouter:
             lines.append('_max_retries=10; _attempt=0; _ec=0')
             lines.append('while [ $_attempt -lt $_max_retries ]; do')
             lines.append('  _attempt=$((_attempt+1))')
+            # On retry attempts, fall back to the plain (non-hf_transfer) downloader
+            # so a hiccup in the fast path doesn't re-crash on every retry.
+            if not is_ollama_download and not req.disable_hf_transfer:
+                lines.append('  if [ $_attempt -gt 1 ]; then export HF_HUB_ENABLE_HF_TRANSFER=0; export HF_HUB_DOWNLOAD_MAX_WORKERS=4; echo "hf_transfer failed once — retrying with plain downloader..."; fi')
             lines.append(f'  {_hf_invoke}')
             lines.append('  _ec=$?')
             lines.append('  if [ $_ec -eq 0 ]; then break; fi')
