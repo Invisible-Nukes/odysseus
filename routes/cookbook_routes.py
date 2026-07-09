@@ -134,6 +134,51 @@ def _missing_binary_message(
     return f"{binary} is required on {target}, but it was not found."
 
 
+def _check_hf_reachable(repo_id: str, hf_token: str):
+    """Return (blocked: bool, message: str).
+
+    Probes the ACTUAL requested HuggingFace repo before launching a
+    download so a non-existent/renamed/private repo fails with a clear
+    message instead of a silent/hanging tmux job.
+
+    Uses the `api/models/{repo}` metadata endpoint (NOT a resolve/HEAD on
+    config.json): many valid GGUF repos have no config.json, so probing
+    that file returns 404 for BOTH existing and non-existing repos and
+    would wrongly block good downloads. `api/models` returns 200 for an
+    existing repo and 401/403/404 for one that doesn't exist / is
+    private / was renamed. Honors HF_ENDPOINT if set.
+    """
+    endpoint = os.environ.get("HF_ENDPOINT") or "https://huggingface.co"
+    api_url = f"{endpoint.rstrip('/')}/api/models/{repo_id}"
+    req = urllib.request.Request(api_url, method="GET")
+    if hf_token:
+        req.add_header("Authorization", f"Bearer {hf_token}")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status < 400:
+                return (False, "")
+            if resp.status in (401, 403, 404):
+                return (True, (
+                    f"HuggingFace repo '{repo_id}' is not accessible "
+                    f"(HTTP {resp.status}). It may not exist, be renamed, "
+                    "private/gated, or require auth. Check the repo id or set a "
+                    "valid HF token (Settings)."
+                ))
+            return (False, "")
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403, 404):
+            return (True, (
+                f"HuggingFace repo '{repo_id}' is not accessible "
+                f"(HTTP {e.code}). It may not exist, be renamed, private/gated, "
+                "or require auth. Check the repo id or set a valid HF token (Settings)."
+            ))
+        return (False, "")
+    except Exception:
+        # Network error (timeout, reset, DNS) — don't hard-block; let the
+        # download attempt report the real failure.
+        return (False, "")
+
+
 async def _remote_binary_available(
     remote: str,
     ssh_port: str | None,
@@ -714,6 +759,20 @@ def setup_cookbook_routes() -> APIRouter:
         req.local_dir = _validate_local_dir(req.local_dir)
         req.hf_token = "" if is_ollama_download else (req.hf_token or _load_stored_hf_token())
         _validate_token(req.hf_token)
+
+        # Pre-flight HuggingFace reachability check (local downloads only).
+        # From some networks HuggingFace returns 401 for ALL repos (public
+        # included) because egress is blocked/proxied; the download would then
+        # fail or hang silently. Surface a clear error up front instead.
+        if not is_ollama_download and not req.remote_host:
+            _hf_blocked, _hf_msg = _check_hf_reachable(req.repo_id, req.hf_token)
+            if _hf_blocked:
+                return {
+                    "ok": False,
+                    "error": _hf_msg,
+                    "session_id": None,
+                }
+
         TMUX_LOG_DIR.mkdir(parents=True, exist_ok=True)
         session_id = f"cookbook-{uuid.uuid4().hex[:8]}"
         wrapper_script = TMUX_LOG_DIR / f"{session_id}.sh"

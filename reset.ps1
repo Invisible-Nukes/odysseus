@@ -15,11 +15,29 @@ Write-Host '==> Resetting Odysseus runtime artifacts (cache / downloads / venv)'
 $failed = @()
 
 # 1. Stop resident Odysseus/uvicorn processes so files can be removed.
+#    Scope matches to OUR venv binaries only and exclude Hermes-owned processes,
+#    so the reset never kills Hermes Desktop (or other unrelated processes).
+$venvScripts = Join-Path (Join-Path $root 'venv') 'Scripts'
+$venvPy = Join-Path $venvScripts 'python.exe'
+$venvPyLower = $venvPy.ToLowerInvariant()
+$chromaExe = Join-Path $venvScripts 'chroma.exe'
+$chromaExeLower = $chromaExe.ToLowerInvariant()
+$hermesMarker = Join-Path $env:LOCALAPPDATA 'hermes\hermes-agent'
+$hermesMarkerLower = $hermesMarker.ToLowerInvariant()
 $procs = Get-CimInstance Win32_Process | Where-Object {
     $_.ProcessId -ne $PID
 } | Where-Object {
     $cmd = $_.CommandLine
-    -not [string]::IsNullOrEmpty($cmd) -and ($cmd -match 'uvicorn|app:app|odysseus')
+    if ([string]::IsNullOrEmpty($cmd)) { $false; return }
+    $cmdLower = $cmd.ToLowerInvariant()
+    $exe = $null
+    try { $exe = $_.ExecutablePath } catch { }
+    if (-not $exe) { $exe = ($cmd -split '\s+')[0] -replace '"', '' }
+    $exeLower = $exe.ToLowerInvariant()
+    if ($hermesMarkerLower -and $exeLower.Contains($hermesMarkerLower)) { $false; return }
+    if ($cmdLower.Contains($venvPyLower) -and $cmdLower.Contains('uvicorn') -and $cmdLower.Contains('app:app')) { $true; return }
+    if ($cmdLower.Contains($chromaExeLower)) { $true; return }
+    $false
 }
 if ($procs) {
     Write-Host "Stopping $($procs.Count) resident process(es)..." -ForegroundColor Yellow

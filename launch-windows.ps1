@@ -81,12 +81,34 @@ function Open-OdysseusBrowser($url) {
 function Get-OdysseusProcesses {
     try {
         $repoRoot = $PSScriptRoot
+        $venvScripts = Join-Path (Join-Path $repoRoot "venv") "Scripts"
+        $venvPy = Join-Path $venvScripts "python.exe"
+        $venvPyLower = $venvPy.ToLowerInvariant()
+        $chromaExe = Join-Path $venvScripts "chroma.exe"
+        $chromaExeLower = $chromaExe.ToLowerInvariant()
+        $hermesMarker = Join-Path $env:LOCALAPPDATA 'hermes\hermes-agent'
+        $hermesMarkerLower = $hermesMarker.ToLowerInvariant()
         $processes = Get-CimInstance Win32_Process
         return $processes | Where-Object {
-            if (-not $_.CommandLine) { return $false }
-            if ($_.ProcessId -eq $PID) { return $false }
+            if (-not $_.CommandLine) { $false; return }
+            if ($_.ProcessId -eq $PID) { $false; return }
             $cmd = $_.CommandLine
-            return ($cmd -match "uvicorn") -or ($cmd -match "app:app") -or ($cmd -match "odysseus") -or ($cmd -match [regex]::Escape($repoRoot))
+            $cmdLower = $cmd.ToLowerInvariant()
+            # Resolve the executable so we can EXCLUDE Hermes-owned processes
+            # (this was shutting down Hermes Desktop).
+            $exe = $null
+            try { $exe = $_.ExecutablePath } catch { }
+            if (-not $exe) { $exe = ($cmd -split '\s+')[0] -replace '"', '' }
+            $exeLower = $exe.ToLowerInvariant()
+            if ($hermesMarkerLower -and $exeLower.Contains($hermesMarkerLower)) { $false; return }
+            # Match on the COMMAND LINE, not the host executable: uvicorn is launched
+            # via `cmd /c start "<venv>\python.exe" -m uvicorn app:app`, so the
+            # host exe is cmd.exe/python313 but the command line carries our venv path.
+            # Genuine Odysseus server: venv python (in cmd line) running `uvicorn app:app`.
+            if ($cmdLower.Contains($venvPyLower) -and $cmdLower.Contains('uvicorn') -and $cmdLower.Contains('app:app')) { $true; return }
+            # Genuine stale ChromaDB: venv chroma.exe.
+            if ($cmdLower.Contains($chromaExeLower)) { $true; return }
+            $false
         }
     } catch {
         return @()
@@ -320,17 +342,40 @@ function Test-ChromaDbPackageReady($venvPy) {
 function Ensure-ChromaDbPackage($venvPy) {
     $chromaExe = Get-ChromaDbLauncherPath $venvPy
     if ($chromaExe) {
-        Write-Host "ChromaDB server already installed in venv - skipping pip install."
+        Write-Host "ChromaDB server already installed in venv - skipping pip install." -ForegroundColor Green
         return $chromaExe
     }
-    if (Test-ChromaDbPackageReady $venvPy) {
-        Write-Host "ChromaDB client package found in venv." -ForegroundColor Green
+
+    # The ChromaDB *server* binary (chroma.exe) ships with the full `chromadb`
+    # package, NOT `chromadb-client` (HTTP client only). The launcher needs the
+    # server binary to actually start ChromaDB, so install `chromadb` here.
+    # Use the working mirror (ODYSSEUS_PIP_MIRROR) because public PyPI resets TLS
+    # with 10054 from this host.
+    $chromaInstalled = $false
+    if (-not (Test-ChromaDbPackageReady $venvPy)) {
+        Write-Host "ChromaDB not found in venv; installing full chromadb package (provides chroma.exe server)..." -ForegroundColor Cyan
+    } else {
+        Write-Host "ChromaDB client present but server binary (chroma.exe) missing; ensuring full chromadb package..." -ForegroundColor Yellow
+    }
+    $prevIndex = $env:PIP_INDEX_URL
+    if ($env:ODYSSEUS_PIP_MIRROR) { $env:PIP_INDEX_URL = $env:ODYSSEUS_PIP_MIRROR }
+    try {
+        & $venvPy -m pip install -q chromadb 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { $chromaInstalled = $true }
+    } finally {
+        $env:PIP_INDEX_URL = $prevIndex
+    }
+    if (-not $chromaInstalled) {
+        Write-Host "WARNING: failed to install full chromadb package; ChromaDB server will be unavailable (RAG/memory degraded)." -ForegroundColor Yellow
         return $null
     }
-    Write-Host "ChromaDB client not found in venv; installing chromadb-client..." -ForegroundColor Cyan
-    & $venvPy -m pip install -q chromadb-client
-    if ($LASTEXITCODE -ne 0) { return $null }
-    Write-Host "ChromaDB client installed successfully." -ForegroundColor Green
+
+    $chromaExe = Get-ChromaDbLauncherPath $venvPy
+    if ($chromaExe) {
+        Write-Host "ChromaDB server installed successfully ($(Split-Path $chromaExe -Leaf))." -ForegroundColor Green
+        return $chromaExe
+    }
+    Write-Host "WARNING: chromadb installed but chroma.exe not found; ChromaDB server unavailable." -ForegroundColor Yellow
     return $null
 }
 
