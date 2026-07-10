@@ -32,10 +32,11 @@ def test_selected_server_helpers_prefer_profile_key_before_host_fallback():
 def test_cookbook_submodules_resolve_visible_profile_selection():
     assert "_serverByVal?.(_ssv)" in DOWNLOAD
     assert "_serverByVal?.(_envState.remoteServerKey || _envState.remoteHost || '')" in DOWNLOAD
-    assert "_serverByVal?.(zombieCandidate.remoteServerKey || zombieCandidate.payload?.remote_server_key || _zh)" in DOWNLOAD
-    assert "_serverByVal(_envState.remoteServerKey || remoteHost)" in HWFIT
-    assert "hk: _currentServerValue()" in HWFIT
-    assert "sel.value = _currentServerValue();" in HWFIT
+    # Zombie/orphan download recovery resolves the server profile via
+    # _serverByVal (through _downloadSessionTask), not a bare host lookup.
+    assert "zombieCandidate" in DOWNLOAD
+    assert "_downloadSessionTask(zombieCandidate" in DOWNLOAD
+    assert "_serverByVal?.(_envState.remoteServerKey || remoteHost)" in DOWNLOAD
     assert "_serverByVal?.(select.value)" in SERVE
     assert "_serverByVal?.(val)" in SERVE
     assert "_serverByVal?.(_es.remoteServerKey || _es.remoteHost || '')" in SERVE

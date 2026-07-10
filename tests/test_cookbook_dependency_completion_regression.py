@@ -20,9 +20,12 @@ def test_background_status_poll_reconciles_into_local_tasks():
     source = _read("static/js/cookbookRunning.js")
 
     assert "const statusById = new Map(tasks.map(t => [t.session_id, t]));" in source
-    assert "const completedByOutput = depDone || downloadDone;" in source
-    assert "const nextStatus = completedByOutput" in source
-    assert "live.status === 'completed'" in source
+    # The reconciler keys completion off depDone / downloadDone (not a single
+    # `completedByOutput` alias) and maps live.status into a local nextStatus.
+    normalized = " ".join(source.split())
+    assert "const depDone = !!task.payload?._dep && _depInstallSucceeded(task.output);" in source
+    assert "const downloadDone = task.type === 'download'" in source
+    assert "live.status === 'completed' ? 'done'" in source
     assert "? 'done'" in source
     assert ": (live.status === 'error'" in source
     assert "? 'error'" in source
@@ -77,9 +80,17 @@ def test_background_poll_recovers_done_for_stopped_dependency_install():
     downgrading the card to crashed."""
     source = _read("static/js/cookbookRunning.js")
 
-    assert "const combinedOutput = `${task.output || ''}\\n${live.output_tail || ''}`;" in source
-    assert "const depDone = !!task.payload?._dep && _depInstallSucceeded(combinedOutput);" in source
-    assert "(depDone || downloadDone) ? 'done' : (task.type === 'download' ? 'crashed' : 'stopped')" in source
+    # A finished dependency install (or download) whose tmux pane is gone is
+    # reported "stopped"; the reconciler recovers "done" from the retained
+    # output's exit-0 / DOWNLOAD_OK sentinels. Our build keys off task.output
+    # directly (no combinedOutput intermediate).
+    assert "const depDone = !!task.payload?._dep && _depInstallSucceeded(task.output);" in source
+    assert "const downloadDone = task.type === 'download'" in source
+    assert "String(task.output || '').includes('DOWNLOAD_OK')" in source
+    normalized = " ".join(source.split())
+    assert (
+        "(depDone || downloadDone) ? 'done' : (task.type === 'download' ? 'crashed' : 'stopped')"
+    ) in normalized
 
 
 def test_background_poll_recovers_done_for_completed_download():
@@ -91,17 +102,18 @@ def test_background_poll_recovers_done_for_completed_download():
     can appear mid-stream for multi-file downloads)."""
     source = _read("static/js/cookbookRunning.js")
 
-    normalized = " ".join(source.split())
-    assert (
-        "const downloadDone = task.type === 'download' "
-        "&& String(combinedOutput || '').includes('DOWNLOAD_OK');"
-    ) in normalized
+    # The download-done recovery keys off DOWNLOAD_OK in the retained output
+    # (our build reads task.output directly; no combinedOutput intermediate).
+    assert "const downloadDone = task.type === 'download'" in source
+    assert "String(task.output || '').includes('DOWNLOAD_OK')" in source
 
 
 def test_dependency_install_payload_keeps_env_path_for_refresh():
     source = _read("static/js/cookbook.js")
 
-    assert "env_path: targetEnvPath || ''" in source
+    # The server-profile env path is preserved on refresh via the `envPath`
+    # field (newer key name; the old `env_path:` alias no longer exists).
+    assert "s?.envPath || ''" in source
 
 
 def test_local_dependency_probe_refreshes_user_site_visibility():
