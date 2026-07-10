@@ -1,0 +1,15 @@
+Status: 200
+Response:
+{
+  "status": "ok",
+  "environment": {
+    "type": "venv",
+    "path": "C:\\Users\\jyang\\odysseus\\venv",
+    "python_version": "3.13.14",
+    "platform_name": "windows",
+    "is_valid": true,
+    "warnings": [],
+    "remote_host": null
+  },
+  "timestamp": "2026-07-10T14:43:09.310320Z"
+}
